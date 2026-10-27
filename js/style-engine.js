@@ -1,0 +1,316 @@
+// 文风标定引擎。
+// 一根轴一个变量，一次只动一根；用户只做一件事——把四段排个序。
+// 排序位置直接反推档位，不做中心化的加权平均（那会把每根轴都往保守偏一档）。
+
+export const AXES = [
+  {
+    id: 'length',
+    name: '句长与密度',
+    ask: '句子多长，分句之间靠什么连',
+    levels: [
+      '一句一停，多数分句不超过八个字，句号多，读起来是断的',
+      '以十五字上下的短句为主，偶尔插一个长句',
+      '分句十五到二十五字，靠逗号推进，三到五个分句串成一句',
+      '一句四十到七十字，三到五个分句连写，句号很少，靠连接词推进',
+    ],
+  },
+  {
+    id: 'link',
+    name: '连接方式',
+    ask: '句子之间靠什么粘住',
+    levels: [
+      '几乎不用连接词，一件事一件事平行排下去',
+      '用然后、后来、接着这类时间词推进',
+      '用所以、因为、但是、而且这类逻辑连词，用得密',
+      '用根据、至于、之所以、而非、相较于、届时这类书面连接词，句子之间是论证关系',
+    ],
+  },
+  {
+    id: 'register',
+    name: '语域',
+    ask: '用词偏口语还是偏书面',
+    levels: [
+      '像说话，可以用语气词、口头禅、把字句',
+      '干净的日常书面语，不用书面词，也不刻意口语',
+      '用书面词，少量成语，句子讲究',
+      '用署名、刊于、断言、归结于、超负荷这类正式词，句式偏定性判断',
+    ],
+  },
+  {
+    id: 'trope',
+    name: '修辞密度',
+    ask: '打不打比方',
+    levels: [
+      '不打比方。要说的东西直接写，不借别的物件来比',
+      '全篇最多一处比喻，必须是日常物件，一次就够',
+      '每两三百字一个比喻，可以用一点通感',
+      '比喻和意象密集，允许华丽',
+    ],
+  },
+  {
+    id: 'certainty',
+    name: '确定性',
+    ask: '下不下判断，怎么下',
+    levels: [
+      '只写发生了什么，不说这意味着什么',
+      '说的时候加条件、范围和可能',
+      '直接下判断，不用也许、可能',
+      '给判断标置信度，会写「我倾向于」「大概率」「不为零」',
+    ],
+  },
+  {
+    id: 'stance',
+    name: '「我」的位置',
+    ask: '「我」是干什么用的',
+    levels: [
+      '没有「我」，只有事情本身',
+      '有「我」，只用来做动作和说话',
+      '「我」主要用来放观点、标推断',
+      '直接对读者说话，会写「你可以认为」「你会看到」',
+    ],
+  },
+  {
+    id: 'ending',
+    name: '收尾动作',
+    ask: '一段话结尾落在哪儿',
+    levels: [
+      '写到动作停就停，不总结',
+      '最后落在一个物件或一个画面上',
+      '最后给一个解释：为什么会这样',
+      '最后给它一个类别或一个更大的说法，拔高一层',
+    ],
+  },
+  {
+    id: 'emotion',
+    name: '情绪处理',
+    ask: '情绪写不写、怎么写',
+    levels: [
+      '只写动作、对话、沉默的长度，不出现情绪词',
+      '情绪通过身体反应写，最多一个情绪词',
+      '直接写他害怕、她生气',
+      '情绪展开写，可以写内心独白',
+    ],
+  },
+  {
+    id: 'grain',
+    name: '观察颗粒',
+    ask: '细节具体到什么程度',
+    levels: [
+      '写类型化的场景，不写具体细节',
+      '每段一个具体物件或数字',
+      '几乎每句都有具体的物件、数量、时间',
+      '精确到能被查证的程度：品牌、型号、金额、日期',
+    ],
+  },
+  {
+    id: 'source',
+    name: '材料来源',
+    ask: '写的东西从哪儿来',
+    levels: [
+      '全靠编，不需要现实依据',
+      '取材于日常见闻',
+      '会引用资料、数据、文献，写进正文',
+      '以可查证的外部材料为主，写明出处',
+    ],
+  },
+];
+
+export const AXIS_BY_ID = Object.fromEntries(AXES.map((a) => [a.id, a]));
+
+// 固定材料：同一件事，四段都写它，才比得出来。
+export const PROBE_MATERIAL =
+  '一个人晚上回家，发现家门口放着一样不属于自己的东西。';
+
+// 除了正在测的那根轴，其余一律钉住。
+export const NEUTRAL =
+  '句子长度中等，日常书面语，不打比方，不写情绪词和内心独白，每段有一个具体物件，第三人称，结尾停在动作上。';
+
+export function levelText(axisId, level) {
+  const a = AXIS_BY_ID[axisId];
+  if (!a) return '';
+  return a.levels[Math.max(0, Math.min(3, level | 0))];
+}
+
+/**
+ * 从排序反推档位。
+ * order：从最差到最好的四个编号（0–3）。
+ * 取排第一那一格的位置；单峰、单调都能用，掉头两次以上只记录不采信。
+ */
+export function estimateLevel(order) {
+  if (!Array.isArray(order) || order.length !== 4) return { level: null, shape: 'invalid', turns: 0 };
+  if (new Set(order).size !== 4) return { level: null, shape: 'invalid', turns: 0 };
+
+  // 单调？
+  const inc = order.every((v, i) => i === 0 || v > order[i - 1]);
+  const dec = order.every((v, i) => i === 0 || v < order[i - 1]);
+  if (inc) return { level: 3, shape: 'up', turns: 0 };
+  if (dec) return { level: 0, shape: 'down', turns: 0 };
+
+  // 单峰 / 单谷：看极值位置
+  let turns = 0;
+  let dir = 0;
+  for (let i = 1; i < order.length; i++) {
+    const d = Math.sign(order[i] - order[i - 1]);
+    if (d === 0) continue;
+    if (dir === 0) dir = d;
+    else if (d !== dir) {
+      turns++;
+      dir = d;
+    }
+  }
+
+  const best = order[3];
+  if (turns <= 1) return { level: best, shape: 'peak', turns };
+  return { level: null, shape: 'noise', turns };
+}
+
+export function estimateAll(style) {
+  const axes = {};
+  const rounds = style.rounds || [];
+  for (const r of rounds) {
+    if (r.level == null) continue;
+    if (!axes[r.axis]) axes[r.axis] = [];
+    axes[r.axis].push(r.level);
+  }
+  const out = {};
+  for (const k of Object.keys(axes)) {
+    const arr = axes[k];
+    out[k] = Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
+  }
+  return out;
+}
+
+/** 把一份文风渲染成给模型的写作指令。没标定的轴不写。 */
+export function brief(style) {
+  if (!style) return '';
+  const axes = style.axes || {};
+  const lines = [];
+  for (const a of AXES) {
+    const v = axes[a.id];
+    if (v == null) continue;
+    lines.push(`- ${a.name}：${a.levels[v]}`);
+  }
+  const notes = (style.notes || []).filter(Boolean);
+  const out = [];
+  const text = String(style.text || '').trim();
+  if (text) out.push('叙述严格按这份写法来：\n' + text);
+  if (lines.length) out.push('叙述按下面这份写法来：\n' + lines.join('\n'));
+  if (notes.length) out.push('另外这几条必须守住：\n' + notes.map((n) => '- ' + n).join('\n'));
+  return out.join('\n');
+}
+
+export function describe(style) {
+  const text = String((style && style.text) || '').trim();
+  if (text) {
+    const n = text.split('\n').filter((l) => l.trim()).length;
+    return `对话敲定 · ${n} 条规则`;
+  }
+  const axes = (style && style.axes) || {};
+  const set = AXES.filter((a) => axes[a.id] != null);
+  if (!set.length) return '还没标定';
+  const top = set
+    .slice(0, 3)
+    .map((a) => a.levels[axes[a.id]].split('，')[0])
+    .join(' · ');
+  return `${set.length}/${AXES.length} 轴 · ${top}`;
+}
+
+export function probeMessages(axis, material) {
+  const a = AXIS_BY_ID[axis];
+  const body = a.levels
+    .map((lv, i) => `${'ABCD'[i]}：${lv}`)
+    .join('\n');
+
+  return [
+    {
+      role: 'system',
+      content:
+        '你在做文风标定。同一件事，用四种写法各写一段，每段 70–110 字。\n' +
+        '四段之间只有一项不同，其余必须完全一致。\n' +
+        `这一项是「${a.name}」。\n\n` +
+        body +
+        `\n\n其余一律保持一致：${NEUTRAL}\n` +
+        '不要开头称呼，不要编号，不要解释和点评，只出正文。\n' +
+        '四段之间用单独一行 --- 隔开。除了正文和 ---，不要输出任何别的东西。',
+    },
+    { role: 'user', content: '材料：' + (material || PROBE_MATERIAL) },
+  ];
+}
+
+// 把模型吐回来的四段正文切出来。优先按 --- 切，其次按空行切，兜底按编号切。
+export function parseProbe(raw) {
+  let text = String(raw || '').trim();
+  if (!text) return [];
+
+  // 模型偶尔还是会给 JSON
+  if (text.startsWith('{')) {
+    try {
+      const o = JSON.parse(text);
+      const arr = o.passages || o.variants || o.texts || o.items;
+      if (Array.isArray(arr)) {
+        const got = arr.map((x) => String(x || '').trim()).filter((x) => x.length >= 8);
+        if (got.length >= 4) return got.slice(0, 4);
+      }
+    } catch {
+      /* 不是 JSON 就往下走 */
+    }
+  }
+
+  let parts = text
+    .split(/\n[ \t]*---+[ \t]*\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (parts.length < 4) {
+    parts = text
+      .split(/\n[ \t]*\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  if (parts.length < 4) {
+    const m = text.match(/[A-Da-d１-４一二三四1-4][）).、:：][ \t]*([^\n]+)/g);
+    if (m && m.length >= 4) parts = m.map((s) => s.replace(/^[A-Da-d１-４一二三四1-4][）).、:：][ \t]*/, '').trim());
+  }
+
+  parts = parts.filter((s) => s.length >= 8);
+  return parts.slice(0, 4);
+}
+
+/* ---------------- 对话式敲定 ---------------- */
+
+const FORGE_SYS = `你在帮一个人把「他自己动笔时的习惯」问出来。这些答案后来会变成一份规则，交给另一个 AI，让它在写小说时模仿他。
+
+怎么问：
+- 一次只问一个问题，问题要短，一句话就能答。
+- 不要问「你喜欢什么风格」「你想要什么感觉」这种没法回答的问题。
+- 要问具体的事：同一个场面你会从哪儿起头；写到哪一句就停；一句话大概多少字；会不会打比方；情绪是直接写出来，还是绕开只写动作；会不会用括号；结尾是下判断还是收住；对话里用不用「他说」。
+- 每问一个新问题之前，先用一句话说你从上一次回答里读到了什么。要具体，比如「你句子偏短，情绪不点名，只写动作」。不要说他很有文学感、很细腻、很深刻。
+- 不要夸他，不要安慰，不要给人生建议。
+- 一次只推进一步。问满五个问题就停，说：差不多了，点「敲定」。
+
+只说中文，不要用书面腔，不要加小标题。`;
+
+const DISTILL_SYS = `下面是一段对话记录：一个人在被问到「他自己写东西时的习惯」时给出的回答。请据此写一份「写作指令」，交给另一个 AI，让它照着这份指令替这个人写小说。
+
+要求：
+- 6 到 9 条，每条一行，以「· 」开头。
+- 每条必须是可执行的规则：怎么写。不能是形容词：写得怎样。
+- 不要出现这些词：优美、细腻、有张力、引人入胜、生动、深刻、丰富、独特、流畅。
+- 只写指令。不要开场白，不要总结，不要解释你为什么这么写。
+- 某一条如果没有依据，就不要写。`;
+
+export function forgeMessages(chat) {
+  return [{ role: 'system', content: FORGE_SYS }, ...(chat || [])];
+}
+
+export function forgeDistillMessages(chat) {
+  const transcript = (chat || [])
+    .filter((m) => m && m.content)
+    .map((m) => (m.role === 'user' ? '我：' : '你：') + String(m.content).trim())
+    .join('\n\n');
+  return [
+    { role: 'system', content: DISTILL_SYS },
+    { role: 'user', content: '记录如下：\n\n' + transcript },
+  ];
+}
