@@ -398,7 +398,7 @@ textarea { resize: none; }
   gap: 10px;
   margin-top: 14px;
 }
-.row-btns .btn { flex: 1; }
+.row-btns .btn { flex: 1; min-width: 0; padding-left: 8px; padding-right: 8px; }
 
 /* ---------- 面板 / 列表 ---------- */
 
