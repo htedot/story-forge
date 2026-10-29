@@ -145,6 +145,23 @@ button { border: 0; background: none; cursor: pointer; }
 input, textarea, select { -webkit-appearance: none; appearance: none; }
 textarea { resize: none; }
 
+/* 面板里的输入框：之前没给宽度，实际只有 185px 宽，右边全空着 */
+.panel textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 14px;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.95;
+  min-height: 150px;
+}
+.panel textarea::placeholder { color: var(--label2); }
+.panel textarea:focus { outline: none; border-color: var(--accent); }
+
 #app { min-height: 100%; }
 
 .boot {
