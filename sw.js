@@ -1,6 +1,6 @@
 // 同源静态文件：先走网络，拿到就用新的并顺手更新缓存；断网了才回落到缓存。
 // 这样改完代码刷新一次就生效，不会被旧缓存卡住。
-const CACHE = 'sf-v14';
+const CACHE = 'sf-v15';
 const ASSETS = [
   './',
   './index.html',
