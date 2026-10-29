@@ -266,6 +266,7 @@ function viewForge() {
       <div class="dim">不用完整，不用讲究。写你平时会写的那样，三五句就够。</div>
       <div class="matbox"><span>就写这个</span>${esc(ESSAY_MATERIAL)}</div>
       <textarea id="essay" rows="8" placeholder="从这一句往下写，写到你自然停下来为止。">${esc(f.essay || '')}</textarea>
+      <div class="pasterow"><button class="lnk" data-act="paste-essay">从剪贴板粘贴</button></div>
     </div>
     <div class="row-btns">
       <button class="btn ghost" data-act="forge-skip">跳过去，我自己写规则</button>
@@ -284,6 +285,7 @@ function viewForge() {
       <div class="seclabel">写作规则${f.round > 1 ? ` · 第 ${f.round} 版` : ''}</div>
       <div class="dim">这几条可以直接改。以后写小说，叙述就按这几条来。</div>
       <textarea id="forge-rules" rows="11">${esc(f.rules || '')}</textarea>
+      <div class="pasterow"><button class="lnk" data-act="paste-rules">从剪贴板粘贴</button></div>
     </div>
     ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
     <div class="row-btns">
@@ -1050,6 +1052,10 @@ $app.addEventListener('click', async (e) => {
         return back();
       case 'forge-start':
         return startForge();
+      case 'paste-essay':
+        return pasteInto('essay');
+      case 'paste-rules':
+        return pasteInto('forge-rules');
       case 'forge-analyze':
         return forgeAnalyze();
       case 'forge-skip':
@@ -1673,6 +1679,25 @@ const gv = (id, fallback) => {
   const el = document.getElementById(id);
   return el ? el.value : fallback;
 };
+
+// 手机上没有键盘那么方便，也为了不依赖系统输入法：直接从剪贴板取一段。
+async function pasteInto(id) {
+  try {
+    const t = await navigator.clipboard.readText();
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (!t || !t.trim()) {
+      toast('剪贴板里没有字');
+      return;
+    }
+    el.value = (el.value && el.value.trim() ? el.value.replace(/\s*$/, '') + '\n\n' : '') + t;
+    if (S.forge) S.forge[id === 'essay' ? 'essay' : 'rules'] = el.value;
+    el.focus();
+    toast('贴进来了');
+  } catch (e) {
+    toast('浏览器没给剪贴板权限');
+  }
+}
 
 function paintForgeLive(text) {
   const el = document.getElementById('live');
