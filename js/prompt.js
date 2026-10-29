@@ -28,6 +28,36 @@ export function cardPovNote(card) {
 
 /* ---------------- 演绎 ---------------- */
 
+/* ---------------- 演绎的选项 ---------------- */
+
+export const OUT_MARK = '<<<';
+
+/**
+ * 把一轮回复拆成「正文」和「三条路」。
+ * 流式输出时标记可能只写了一半，这里会把它一起截掉，避免闪烁。
+ */
+export function splitOut(raw) {
+  const s = String(raw || '');
+  const i = s.indexOf(OUT_MARK);
+  if (i < 0) {
+    const tail = s.match(/<{1,2}$/);
+    return { body: tail ? s.slice(0, s.length - tail[0].length) : s, options: [] };
+  }
+  const options = s
+    .slice(i + OUT_MARK.length)
+    .split('\n')
+    .map((x) =>
+      x
+        .trim()
+        .replace(/^[-*·•]\s*/, '')
+        .replace(/^\d+[.、)）]\s*/, '')
+        .trim()
+    )
+    .filter((x) => x.length >= 2)
+    .slice(0, 3);
+  return { body: s.slice(0, i), options };
+}
+
 export function sessionSystem(story, card, style) {
   const k = KIND_BY_ID[card.kind] || { name: '设定' };
   const others = (story.cards || []).filter((c) => c.kind === 'character' && c.id !== card.id);
@@ -57,6 +87,12 @@ export function sessionSystem(story, card, style) {
     '先不要开始演。先用四五句话复述你对这张卡的理解：这个人（或这个世界）是什么状况、想要什么、说话什么调子、此刻处在什么地方。',
     '然后问一句：「是这样吗？要不要改什么？」',
     '作者确认之后，你再演第一轮。',
+    '',
+    '【每轮结尾：给作者三条路】',
+    '正文写完后，另起一行，只写三个小于号：<<<',
+    '然后写三行，每行是作者接下来可以说的或做的一件事，12–24 字，用「我」开头，不要编号，不要解释，不要加引号。',
+    '三行必须是三条不同的路：一条往前推（把事闹大）、一条往后缩（先稳住）、一条是现场没人想到的那种。',
+    '不要让三条都朝着对作者有利的方向。作者应该有的选，而不是有好的选。',
   ]
     .filter(Boolean)
     .join('\n');
