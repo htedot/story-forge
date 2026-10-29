@@ -5,6 +5,9 @@ import { AXES, AXIS_BY_ID, probeMessages, parseProbe, estimateLevel, brief, desc
 
 const $app = document.getElementById('app');
 
+// 自检用的种子文本；正常发布时留空串。
+const DEV_SEED = '我站在冷柜前面站了很久，一直没有打开柜门。店员在后面理货，塑料袋的声音停了一下，又响起来。我数了数口袋里的东西：一个手机，一张不认识的卡，还有半包纸巾。手机没电了，屏幕怎么按都不亮。我把那张卡翻过来，背面用圆珠笔写了一串数字，看不清是几位。最后我什么也没买，从侧门出去了。';
+
 const S = {
   ready: false,
   settings: null,
@@ -1657,7 +1660,7 @@ function startForge() {
   S.forge = {
     style: S_.newStyle({ name: '我的文风' }),
     stage: 'essay',
-    essay: '',
+    essay: DEV_SEED,
     read: [],
     rules: '',
     passages: [],
