@@ -212,7 +212,7 @@ function viewStyles() {
   return `<div class="wrap">
     ${topbar('文风')}
     <button class="btn primary wide" data-act="forge-start">提取一份新文风</button>
-    ${S.styles.length ? `<div class="list">${S.styles.map(styleRow).join('')}</div>` : '<div class="empty"><div class="big">还没有文风</div><p>做一次提取：AI 出四段，你从最差排到最好。</p></div>'}
+    ${S.styles.length ? `<div class="list">${S.styles.map(styleRow).join('')}</div>` : '<div class="empty"><div class="big">还没有文风</div><p>写一小段随笔，它读出你的写法，照着重写四段，你排个序就定下来。</p></div>'}
   </div>`;
 }
 
