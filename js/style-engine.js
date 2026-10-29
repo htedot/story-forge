@@ -203,7 +203,7 @@ export function describe(style) {
   const text = String((style && style.text) || '').trim();
   if (text) {
     const n = text.split('\n').filter((l) => l.trim()).length;
-    return `对话敲定 · ${n} 条规则`;
+    return `实验法 · ${n} 条规则`;
   }
   const axes = (style && style.axes) || {};
   const set = AXES.filter((a) => axes[a.id] != null);
@@ -313,4 +313,137 @@ export function forgeDistillMessages(chat) {
     { role: 'system', content: DISTILL_SYS },
     { role: 'user', content: '记录如下：\n\n' + transcript },
   ];
+}
+
+/* ---------------- 实验法：随笔 → 规则 → 仿写 → 排序 → 改规则 ----------------
+   和上面那套「对话敲定」的区别：规则在第一轮就存在，之后每轮只是改它。
+   所以「敲定」永远不是一次高风险的大生成，只是把手里这版存下来。 */
+
+export const ESSAY_MATERIAL = '深夜的便利店。一个人结账的时候发现手机没电了，身上只有一张不认识的卡。';
+
+const ANALYZE_SYS = `你会读到一个人随手写的一小段话。请从中读出他动笔时的习惯，然后做两件事。
+
+第一件，用三行写下你读到了什么。每行以「读到：」开头，后面跟一句话。必须具体，指得出东西：句子多长、从哪儿起头、停在哪里、有没有打比方、情绪是写出来还是绕开只写动作、有没有用括号。不要说他文笔好、有文学感、有张力、细腻。
+
+第二件，把这套习惯写成一份「写作规则」，交给另一个 AI 照着写。6 到 9 条，每条一行，以「· 」开头。
+每条必须是可执行的动作——怎么写。不能是形容词——写得怎样。
+不要出现这些词：优美、细腻、有张力、引人入胜、生动、深刻、丰富、独特、流畅。
+没把握的不要写。宁可少写两条。
+
+只说中文。不要开场白，不要总结。`;
+
+export function analyzeMessages(essay) {
+  return [
+    { role: 'system', content: ANALYZE_SYS },
+    { role: 'user', content: '他写的：\n\n' + String(essay || '').trim() },
+  ];
+}
+
+const stripMark = (s) => String(s || '').replace(/^\s*(?:\d+[.、)）]|[-*•·‣∙])\s*/, '').trim();
+
+export function parseAnalyze(raw) {
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const read = [];
+  const rules = [];
+  for (const line of lines) {
+    const m = stripMark(line).match(/^读到\s*[：:]\s*(.+)$/);
+    if (m) {
+      read.push(m[1].trim());
+      continue;
+    }
+    const r = line.match(/^[·•‣∙]\s*(.+)$/);
+    if (r && r[1].trim().length >= 4) rules.push(r[1].trim());
+  }
+  if (!rules.length) {
+    for (const line of lines) {
+      const bare = stripMark(line);
+      if (/^读到/.test(bare)) continue;
+      if (bare.length >= 4 && bare.length <= 90) rules.push(bare);
+    }
+  }
+  return { read: read.slice(0, 3), rules: rules.slice(0, 12) };
+}
+
+const IMITATE_SYS = `你会拿到一份「写作规则」。请照着它写四段文字。
+
+四段都写同一个材料。都尽量遵守规则；但在规则没有说清楚的地方，每一段各自做一个不同的选择——句子的松紧、信息给的早晚、停在哪里、要不要解释。四段必须真的不一样，否则这个人排不出序。
+
+输出格式：四段正文，每段之间单独一行写 ---。不要编号，不要标题，不要解释，不要加引号。`;
+
+export function imitateMessages(rules, material) {
+  return [
+    { role: 'system', content: IMITATE_SYS },
+    {
+      role: 'user',
+      content: `材料：${material || ESSAY_MATERIAL}\n\n规则：\n${String(rules || '').trim()}`,
+    },
+  ];
+}
+
+const SEP = /^\s*-{3,}\s*$/m;
+
+export function parsePassages(raw) {
+  const text = String(raw || '').replace(/\r/g, '');
+  const parts = text.split(/^\s*-{3,}\s*$/m);
+  const out = parts
+    .map((p) => p.trim().replace(/^\s*\d+[.、)）]\s*/, '').trim())
+    .filter((p) => p.length >= 10);
+  return out.slice(0, 4);
+}
+
+const REVISE_SYS = `一个人写了一份「写作规则」，AI 照着它写了四段。这个人把四段从最差排到最好。
+
+请据此修改规则。
+
+- 他排在越后面（越好）的段，说明规则在这些地方是对的，保留。
+- 他排在越前面（越差）的段，说明规则在这些地方偏了，改掉。要能说出偏在哪儿：句子太整齐？解释太多？停得太早？太爱打比方？
+- 如果四段都被排得很差，说明规则整体偏了，重写。
+- 如果他说「都不像」并给了话，以那句话为准。
+
+输出一份新的完整规则，6 到 9 条，每条一行，以「· 」开头。
+只输出规则。不要解释，不要总结，不要说他很有眼光。
+不要出现这些词：优美、细腻、有张力、引人入胜、生动、深刻、丰富、独特、流畅。`;
+
+export function reviseMessages(rules, passages, order, note) {
+  const list = (order || [])
+    .map((idx, k) => {
+      const tag =
+        k === 0 ? '——他排在最前，最差' : k === order.length - 1 ? '——他排在最后，最好' : '——中间';
+      return `【第 ${idx + 1} 段】${tag}\n${String(passages[idx] || '').trim()}`;
+    })
+    .join('\n\n');
+  const tail = String(note || '').trim();
+  return [
+    { role: 'system', content: REVISE_SYS },
+    {
+      role: 'user',
+      content:
+        `旧规则：\n${String(rules || '').trim()}\n\n四段与他排的顺序：\n\n${list}` +
+        (tail ? `\n\n他另外说了一句：${tail}` : ''),
+    },
+  ];
+}
+
+export function parseRules(raw) {
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const rules = [];
+  for (const line of lines) {
+    const r = line.match(/^[·•‣∙]\s*(.+)$/);
+    if (r && r[1].trim().length >= 4) rules.push(r[1].trim());
+  }
+  if (rules.length) return rules.slice(0, 12);
+  return lines
+    .map(stripMark)
+    .filter((l) => l.length >= 4 && l.length <= 90)
+    .slice(0, 12);
+}
+
+export function rulesToText(rules) {
+  return (rules || []).map((r) => '· ' + r).join('\n');
 }
