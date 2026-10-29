@@ -1,7 +1,7 @@
 import { chat, streamChat, listModels, pickModel, testConnection } from './api.js';
 import * as S_ from './store.js';
 import * as P from './prompt.js';
-import { AXES, AXIS_BY_ID, probeMessages, parseProbe, estimateLevel, brief, describe, PROBE_MATERIAL, forgeMessages, forgeDistillMessages } from './style-engine.js';
+import { AXES, AXIS_BY_ID, probeMessages, parseProbe, estimateLevel, brief, describe, PROBE_MATERIAL, analyzeMessages, parseAnalyze, imitateMessages, parsePassages, reviseMessages, parseRules, rulesToText, ESSAY_MATERIAL } from './style-engine.js';
 
 const $app = document.getElementById('app');
 
@@ -239,52 +239,114 @@ function quickbar(curModel) {
 function viewForge() {
   const f = S.forge;
   if (!f) return '';
-  if (f.done) {
-    return `<div class="wrap">
-      ${topbar('文风提取')}
-      <div class="panel">
-        <div class="seclabel">敲定了</div>
-        <input class="field" id="style-name" value="${esc(f.name || '我的文风')}" placeholder="给这份文风起个名字">
-        <pre class="ruletxt">${esc(f.style.text || '（空）')}</pre>
-        <div class="dim">以后写小说，叙述就按这几条来。不满意可以再聊一轮。</div>
-      </div>
-      <div class="row-btns">
-        <button class="btn" data-act="forge-again">再聊一轮</button>
-        <button class="btn primary" data-act="forge-save">存下来</button>
-      </div>
+  const STEPS = ['写一段', '看规则', '让它写', '排个序', '存下来'];
+  const idx = { essay: 1, rules: 2, imitate: 3, rank: 4, done: 5 }[f.stage] || 1;
+  const hasRules = !!String(f.rules || '').trim();
+  const canLock = !f.busy && hasRules && f.stage !== 'done';
+
+  const stepsBar = `<div class="fsteps">${STEPS.map((t, i) => {
+    const n = i + 1;
+    return `<i class="${n < idx ? 'ok' : n === idx ? 'on' : ''}">${t}</i>`;
+  }).join('')}</div>`;
+
+  const head = `<header class="topbar">
+    <button class="ico" data-act="back">‹</button>
+    <div class="bt"><b>提取我的文风</b><span>${STEPS[idx - 1]} · 第 ${idx} 步</span></div>
+    ${canLock ? '<button class="ico" data-act="forge-done">敲定</button>' : '<span class="ico-sp"></span>'}
+  </header>`;
+
+  let body = '';
+
+  if (f.stage === 'essay') {
+    body = `
+    <div class="panel">
+      <div class="seclabel">先写一小段</div>
+      <div class="dim">不用完整，不用讲究。写你平时会写的那样，三五句就够。</div>
+      <div class="matbox"><span>就写这个</span>${esc(ESSAY_MATERIAL)}</div>
+      <textarea id="essay" rows="8" placeholder="从这一句往下写，写到你自然停下来为止。">${esc(f.essay || '')}</textarea>
+    </div>
+    <div class="row-btns">
+      <button class="btn ghost" data-act="forge-skip">跳过去，我自己写规则</button>
+      <button class="btn primary" data-act="forge-analyze" ${f.busy ? 'disabled' : ''}>让它看</button>
+    </div>
+    ${f.busy ? '<div class="dim center pad">正在读你写的那一段…</div>' : ''}`;
+  }
+
+  if (f.stage === 'rules') {
+    body = `
+    ${f.read && f.read.length ? `<div class="panel readbox">
+      <div class="seclabel">它读到的</div>
+      ${f.read.map((r) => `<p>${esc(r)}</p>`).join('')}
+    </div>` : ''}
+    <div class="panel">
+      <div class="seclabel">写作规则${f.round > 1 ? ` · 第 ${f.round} 版` : ''}</div>
+      <div class="dim">这几条可以直接改。以后写小说，叙述就按这几条来。</div>
+      <textarea id="forge-rules" rows="11">${esc(f.rules || '')}</textarea>
+    </div>
+    ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
+    <div class="row-btns">
+      <button class="btn ghost" data-act="forge-back-essay">回去重写那段</button>
+      <button class="btn primary" data-act="forge-imitate" ${f.busy ? 'disabled' : ''}>让它照这个写四段</button>
     </div>`;
   }
 
-  const asked = f.chat.filter((m) => m.role === 'user').length;
-  const msgs = f.chat
-    .map((m) =>
-      m.role === 'user'
-        ? `<div class="me"><div class="bubble">${esc(m.content)}</div></div>`
-        : `<div class="ai">${String(m.content || '')
-            .split(/\n+/)
-            .filter(Boolean)
-            .map((p) => `<p>${esc(p)}</p>`)
-            .join('')}</div>`
-    )
-    .join('');
+  if (f.stage === 'imitate') {
+    body = `
+    <div class="panel">
+      <div class="seclabel">它照规则写的四段</div>
+      <div class="dim">同一个材料，四种写法。等下你要把它们从最差排到最好。</div>
+      ${f.busy ? `<div class="live" id="live">${esc(f.live || '')}</div>` : ''}
+      ${!f.busy && f.passages.length ? f.passages.map((p, i) => `<div class="passage"><b>${i + 1}</b><p>${esc(p)}</p></div>`).join('') : ''}
+    </div>
+    ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
+    <div class="row-btns">
+      <button class="btn ghost" data-act="forge-back-rules">规则不对，回去改</button>
+      <button class="btn primary" data-act="forge-to-rank" ${f.busy || f.passages.length < 3 ? 'disabled' : ''}>排一下序</button>
+    </div>`;
+  }
 
-  return `<div class="wrap session">
-    <header class="topbar">
-      <button class="ico" data-act="back">‹</button>
-      <div class="bt"><b>聊一聊你的文风</b><span>已回答 ${asked} 个问题 · ${f.busy ? '正在想' : '一次问一件事'}</span></div>
-      <button class="ico" data-act="forge-finalize" ${asked && !f.busy ? '' : 'disabled'}>敲定</button>
-    </header>
+  if (f.stage === 'rank') {
+    body = `
+    <div class="panel">
+      <div class="seclabel">从最差排到最好</div>
+      <div class="dim">依次点四段。第一下＝最差，第四下＝最好。点错了再点一下取消。</div>
+      ${f.passages.map((p, i) => {
+        const pos = f.order.indexOf(i);
+        return `<div class="pickcard ${pos >= 0 ? 'picked' : ''}" data-act="rank-pick" data-id="${i}">
+          <b>${i + 1}</b>
+          ${pos >= 0 ? `<em>${pos + 1}</em>` : ''}
+          <p>${esc(p)}</p>
+        </div>`;
+      }).join('')}
+      <input class="field" id="forge-note" value="${esc(f.note || '')}" placeholder="还有话说就写一句：哪里最不像你">
+    </div>
+    ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
+    <div class="row-btns">
+      <button class="btn ghost" data-act="forge-to-imitate">再写四段</button>
+      <button class="btn primary" data-act="forge-revise" ${f.busy || f.order.length < 4 ? 'disabled' : ''}>按这个改规则</button>
+    </div>`;
+  }
+
+  if (f.stage === 'done') {
+    body = `
+    <div class="panel">
+      <div class="seclabel">存下来</div>
+      <input class="field" id="style-name" value="${esc(f.name || '我的文风')}" placeholder="给这份文风起个名字">
+      <textarea id="forge-rules" rows="11">${esc(f.rules || '')}</textarea>
+      <div class="dim">以后写小说，叙述就按这几条来。随时能回来再改一轮。</div>
+    </div>
+    ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
+    <div class="row-btns">
+      <button class="btn ghost" data-act="forge-to-imitate">再来一轮</button>
+      <button class="btn primary" data-act="forge-save">存下来</button>
+    </div>`;
+  }
+
+  return `<div class="wrap">
+    ${head}
     ${quickbar(S.settings.model)}
-    <div class="stream" id="stream">
-      ${f.busy && !f.chat.length ? '<div class="ai typing">…</div>' : ''}
-      ${msgs}
-      ${f.busy && f.chat.length ? '<div class="ai typing">…</div>' : ''}
-      ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
-    </div>
-    <div class="composer">
-      <textarea id="forge-say" rows="1" placeholder="随便答，一句话就行">${esc(S.input)}</textarea>
-      <button class="send" data-act="forge-send" ${f.busy ? 'disabled' : ''}>发</button>
-    </div>
+    ${stepsBar}
+    ${body}
   </div>`;
 }
 
@@ -812,16 +874,38 @@ $app.addEventListener('click', async (e) => {
         return regenChapter();
       case 'forge-start':
         return startForge();
-      case 'forge-send':
-        return forgeSay();
-      case 'forge-finalize':
-        return finalizeForge();
-      case 'forge-again': {
-        S.forge.done = false;
-        S.forge.chat = [];
-        render();
-        return askForge();
+      case 'forge-analyze':
+        return forgeAnalyze();
+      case 'forge-skip':
+        S.forge.stage = 'rules';
+        S.forge.read = [];
+        return render();
+      case 'forge-back-essay':
+        S.forge.stage = 'essay';
+        return render();
+      case 'forge-back-rules':
+        S.forge.stage = 'rules';
+        return render();
+      case 'forge-imitate':
+        return forgeImitate();
+      case 'forge-to-imitate':
+        return forgeImitate();
+      case 'forge-to-rank':
+        if (S.forge.passages.length < 3) return;
+        S.forge.stage = 'rank';
+        S.forge.order = [];
+        return render();
+      case 'rank-pick': {
+        const idx = Number(id);
+        const pos = S.forge.order.indexOf(idx);
+        if (pos >= 0) S.forge.order.splice(pos, 1);
+        else if (S.forge.order.length < 4) S.forge.order.push(idx);
+        return render();
       }
+      case 'forge-revise':
+        return forgeRevise();
+      case 'forge-done':
+        return forgeDone();
       case 'forge-save':
         return saveForge();
       case 'style-del':
@@ -888,7 +972,7 @@ $app.addEventListener('click', async (e) => {
 });
 
 $app.addEventListener('input', (e) => {
-  if (e.target.id === 'say' || e.target.id === 'forge-say') S.input = e.target.value;
+  if (e.target.id === 'say') S.input = e.target.value;
 });
 
 $app.addEventListener('change', (e) => {
@@ -914,9 +998,6 @@ document.addEventListener('keydown', (e) => {
   if (S.view === 'session' && id === 'say') {
     e.preventDefault();
     sendTurn();
-  } else if (S.view === 'forge' && id === 'forge-say') {
-    e.preventDefault();
-    forgeSay();
   }
 });
 
@@ -1309,62 +1390,46 @@ async function finalizeChapter() {
   render();
 }
 
-/* ---------------- 文风提取（对话敲定） ---------------- */
+/* ---------------- 文风提取（实验法：随笔 → 规则 → 仿写 → 排序 → 改规则） ---------------- */
 
-async function startForge() {
-  S.forge = { style: S_.newStyle({ name: '我的文风' }), chat: [], busy: false, done: false };
+function startForge() {
+  S.forge = {
+    style: S_.newStyle({ name: '我的文风' }),
+    stage: 'essay',
+    essay: '',
+    read: [],
+    rules: '',
+    passages: [],
+    order: [],
+    note: '',
+    round: 1,
+    busy: false,
+    live: '',
+    name: '我的文风',
+  };
   S.err = '';
   S.input = '';
   S.stack = ['shelf', 'styles'];
   S.view = 'forge';
   render();
-  askForge();
 }
 
-async function askForge() {
-  const f = S.forge;
-  if (!f) return;
-  f.busy = true;
-  S.err = '';
-  render();
-  try {
-    const chatLog = f.chat.length ? f.chat : [{ role: 'user', content: '开始吧，问第一个问题。' }];
-    const out = await chat({
-      baseUrl: S.settings.baseUrl,
-      apiKey: S.settings.apiKey,
-      model: S.settings.model,
-      effort: S.settings.effort,
-      messages: forgeMessages(chatLog),
-      json: false,
-      maxTokens: 420,
-      temperature: 0.9,
-    });
-    f.chat.push({ role: 'assistant', content: String(out).trim() });
-  } catch (err) {
-    S.err = err.message || String(err);
-  } finally {
-    f.busy = false;
-    render();
-  }
+const gv = (id, fallback) => {
+  const el = document.getElementById(id);
+  return el ? el.value : fallback;
+};
+
+function paintForgeLive(text) {
+  const el = document.getElementById('live');
+  if (el) el.textContent = text;
 }
 
-async function forgeSay(text) {
+async function forgeAnalyze() {
   const f = S.forge;
   if (!f || f.busy) return;
-  const content = String(text != null ? text : S.input).trim();
-  if (!content) return;
-  S.input = '';
-  f.chat.push({ role: 'user', content });
-  render();
-  await askForge();
-}
-
-async function finalizeForge() {
-  const f = S.forge;
-  if (!f || f.busy) return;
-  const answers = f.chat.filter((m) => m.role === 'user').length;
-  if (!answers) {
-    toast('先回答一个问题');
+  f.essay = gv('essay', f.essay);
+  if (String(f.essay).trim().length < 30) {
+    toast('再写几句，至少三十个字');
     return;
   }
   f.busy = true;
@@ -1376,14 +1441,16 @@ async function finalizeForge() {
       apiKey: S.settings.apiKey,
       model: S.settings.model,
       effort: S.settings.effort,
-      messages: forgeDistillMessages(f.chat),
+      messages: analyzeMessages(f.essay),
       json: false,
-      maxTokens: 900,
-      temperature: 0.6,
+      maxTokens: 1800,
+      temperature: 0.7,
     });
-    f.style.text = String(out).trim();
-    f.style.chat = f.chat.slice();
-    f.done = true;
+    const got = parseAnalyze(out);
+    f.read = got.read;
+    f.rules = rulesToText(got.rules);
+    if (!String(f.rules).trim()) throw new Error('这次没拆出规则来，再试一次，或者跳过去自己写。');
+    f.stage = 'rules';
   } catch (err) {
     S.err = err.message || String(err);
   } finally {
@@ -1392,10 +1459,110 @@ async function finalizeForge() {
   }
 }
 
+async function forgeImitate() {
+  const f = S.forge;
+  if (!f || f.busy) return;
+  f.rules = gv('forge-rules', f.rules);
+  if (!String(f.rules).trim()) {
+    toast('规则是空的');
+    return;
+  }
+  f.busy = true;
+  f.live = '';
+  f.passages = [];
+  f.order = [];
+  S.err = '';
+  f.stage = 'imitate';
+  render();
+  try {
+    const out = await streamChat({
+      baseUrl: S.settings.baseUrl,
+      apiKey: S.settings.apiKey,
+      model: S.settings.model,
+      effort: S.settings.effort,
+      messages: imitateMessages(f.rules, ESSAY_MATERIAL),
+      maxTokens: 1800,
+      temperature: 0.95,
+      onDelta: (d, full) => {
+        f.live = full;
+        paintForgeLive(full);
+      },
+    });
+    const ps = parsePassages(out);
+    if (ps.length < 3) throw new Error('四段没写全，再点一次。');
+    f.passages = ps;
+    f.live = '';
+  } catch (err) {
+    S.err = err.message || String(err);
+    f.stage = 'rules';
+  } finally {
+    f.busy = false;
+    render();
+  }
+}
+
+async function forgeRevise() {
+  const f = S.forge;
+  if (!f || f.busy) return;
+  if (f.order.length < 4) {
+    toast('四段都要点一下');
+    return;
+  }
+  f.note = gv('forge-note', f.note);
+  f.busy = true;
+  S.err = '';
+  render();
+  try {
+    const out = await chat({
+      baseUrl: S.settings.baseUrl,
+      apiKey: S.settings.apiKey,
+      model: S.settings.model,
+      effort: S.settings.effort,
+      messages: reviseMessages(f.rules, f.passages, f.order, f.note),
+      json: false,
+      maxTokens: 1800,
+      temperature: 0.5,
+    });
+    const rules = parseRules(out);
+    if (!rules.length) throw new Error('这次没改出东西。规则还是上一版，可以直接敲定，或者再排一轮。');
+    f.rules = rulesToText(rules);
+    f.round += 1;
+    f.passages = [];
+    f.order = [];
+    f.stage = 'rules';
+    toast('规则改好了，再让它写一轮');
+  } catch (err) {
+    S.err = err.message || String(err);
+  } finally {
+    f.busy = false;
+    render();
+  }
+}
+
+function forgeDone() {
+  const f = S.forge;
+  if (!f) return;
+  f.rules = gv('forge-rules', f.rules);
+  if (!String(f.rules).trim()) {
+    toast('还没有规则');
+    return;
+  }
+  f.style.text = String(f.rules).trim();
+  f.stage = 'done';
+  render();
+}
+
 async function saveForge() {
   const f = S.forge;
-  const name = (document.getElementById('style-name') || {}).value || '我的文风';
-  f.style.name = name.trim() || '我的文风';
+  if (!f) return;
+  f.rules = gv('forge-rules', f.rules);
+  if (!String(f.rules).trim()) {
+    toast('规则是空的');
+    return;
+  }
+  f.style.text = String(f.rules).trim();
+  f.style.name = String(gv('style-name', f.name) || '我的文风').trim() || '我的文风';
+  f.style.chat = [];
   await S_.putStyle(f.style);
   S.styles = await S_.listStyles();
   S.forge = null;
