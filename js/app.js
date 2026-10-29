@@ -326,6 +326,7 @@ function viewForge() {
         </div>`;
       }).join('')}
       <input class="field" id="forge-note" value="${esc(f.note || '')}" placeholder="还有话说就写一句：哪里最不像你">
+      <div class="ordersum">${f.order.length ? `你排的：${f.order.map((i) => i + 1).join(' → ')}　（${f.order.length}/4）` : '还没开始排。从你觉得最差的那段点起。'}</div>
     </div>
     ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
     <div class="row-btns">
