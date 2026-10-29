@@ -161,6 +161,7 @@ textarea { resize: none; }
 }
 .panel textarea::placeholder { color: var(--label2); }
 .panel textarea:focus { outline: none; border-color: var(--accent); }
+.pasterow { display: flex; justify-content: flex-end; margin-top: 8px; }
 
 #app { min-height: 100%; }
 
