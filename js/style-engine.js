@@ -412,6 +412,28 @@ export function imitateMessages(rules, material) {
 
 const SEP = /^\s*-{3,}\s*$/m;
 
+// 一次只写一段：比一次要四段稳得多，也能边写边显示进度。
+const IMITATE_ONE_SYS = `你在模仿一个人写小说的手感和句子。严格按给到的「写作规则」写。
+
+只输出这一段的正文。不要标题，不要编号，不要解释，不要用引号把整段括起来，不要写"好的"。120–200 字。`;
+
+const IMITATE_VARIANTS = [
+  '这一段把句子压得更短、更碎，多断句。',
+  '这一段句子可以长一点、连一点，但一个比喻都不要用。',
+  '这一段多写环境声和物件的状态，少写我自己的动作。',
+  '这一段多写我自己的动作顺序，少写环境。',
+];
+
+export function imitateOneMessages(rules, material, i) {
+  return [
+    { role: 'system', content: IMITATE_ONE_SYS },
+    {
+      role: 'user',
+      content: `【写作规则】\n${String(rules || '').trim()}\n\n【这一段怎么处理】\n${IMITATE_VARIANTS[i % IMITATE_VARIANTS.length]}\n\n【材料】\n${material || ESSAY_MATERIAL}`,
+    },
+  ];
+}
+
 export function parsePassages(raw) {
   const text = String(raw || '').replace(/\r/g, '');
   const parts = text.split(/^\s*-{3,}\s*$/m);
