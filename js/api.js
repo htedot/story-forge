@@ -118,7 +118,7 @@ export async function chat({
           return await send(false, bigger, false);
         } catch (e2) {
           if (e2 && e2.empty) {
-            throw new Error('模型连着两次一个字都没返回。去设置里换一个模型（deepseek-chat 这类）再试。');
+            throw new Error('模型连着两次一个字都没返回。再点一次试试；如果一直是空的，去设置里换一个模型。');
           }
           throw e2;
         }
@@ -261,7 +261,7 @@ export async function streamChat(opts) {
   if (second.finish === 'length' || first.finish === 'length') {
     throw new Error(`写一半额度就用完了（${model || '当前模型'}）。把推理等级调成「关」再试，或者换一个更省额度的模型。`);
   }
-  throw new Error('模型这次一个字都没返回。去设置里换一个模型（deepseek-chat 这类）试试，或者把推理等级关掉。');
+  throw new Error('模型这次一个字都没返回。再点一次试试；如果一直是空的，去设置里换一个模型，或者把推理等级调成「关」。');
 }
 
 export async function listModels(baseUrl, apiKey) {
