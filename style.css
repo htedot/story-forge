@@ -1301,24 +1301,36 @@ select.field { background-image: none; }
 
 .pickcard.picked {
   border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 7%, var(--card-2));
+  background: color-mix(in srgb, var(--accent) 10%, var(--card-2));
+  box-shadow: 0 0 0 1px var(--accent) inset;
 }
 
 .pickcard em {
   position: absolute;
-  top: -7px;
-  right: -6px;
-  width: 21px;
-  height: 21px;
-  border-radius: 50%;
+  top: -9px;
+  right: -8px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 12px;
   background: var(--accent);
   color: #fff;
   font-style: normal;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 700;
   display: grid;
   place-items: center;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+  z-index: 3;
+}
+
+.ordersum {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 13.5px;
+  color: var(--dim);
+  letter-spacing: 0.02em;
 }
 
 .pickcard p {
