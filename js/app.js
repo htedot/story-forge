@@ -1,7 +1,7 @@
 import { chat, streamChat, listModels, pickModel, testConnection } from './api.js';
 import * as S_ from './store.js';
 import * as P from './prompt.js';
-import { AXES, AXIS_BY_ID, probeMessages, parseProbe, estimateLevel, brief, describe, PROBE_MATERIAL, analyzeMessages, parseAnalyze, imitateMessages, parsePassages, reviseMessages, parseRules, rulesToText, cleanRules, ESSAY_MATERIAL } from './style-engine.js';
+import { AXES, AXIS_BY_ID, probeMessages, parseProbe, estimateLevel, brief, describe, PROBE_MATERIAL, analyzeMessages, parseAnalyze, imitateMessages, imitateOneMessages, parsePassages, reviseMessages, parseRules, rulesToText, cleanRules, ESSAY_MATERIAL } from './style-engine.js';
 
 const $app = document.getElementById('app');
 
@@ -302,6 +302,7 @@ function viewForge() {
     <div class="panel">
       <div class="seclabel">它照规则写的四段</div>
       <div class="dim">同一个材料，四种写法。等下你要把它们从最差排到最好。</div>
+      ${f.busy ? `<div class="dim pad" id="progress">${esc(f.progress || '正在写…')}</div>` : ''}
       ${f.busy ? `<div class="live" id="live">${esc(f.live || '')}</div>` : ''}
       ${!f.busy && f.passages.length ? f.passages.map((p, i) => `<div class="passage"><b>${i + 1}</b><p>${esc(p)}</p></div>`).join('') : ''}
     </div>
@@ -1759,28 +1760,59 @@ async function forgeImitate() {
   f.stage = 'imitate';
   render();
   try {
-    const out = await streamChat({
-      baseUrl: S.settings.baseUrl,
-      apiKey: S.settings.apiKey,
-      model: S.settings.model,
-      effort: S.settings.effort,
-      messages: imitateMessages(f.rules, ESSAY_MATERIAL),
-      maxTokens: 2600,
-      temperature: 0.95,
-      onDelta: (d, full) => {
-        f.live = full;
-        paintForgeLive(full);
-      },
-    });
-    const ps = parsePassages(out);
-    if (ps.length < 3) throw new Error('四段没写全，再点一次。');
-    f.passages = ps;
+    // 一段一次：单次更短更稳，而且每段出来就能显示进度。
+    for (let i = 0; i < 4; i += 1) {
+      f.progress = `正在写第 ${i + 1} / 4 段…`;
+      f.live = '';
+      render();
+      let got = '';
+      try {
+        got = await streamChat({
+          baseUrl: S.settings.baseUrl,
+          apiKey: S.settings.apiKey,
+          model: S.settings.model,
+          effort: S.settings.effort,
+          messages: imitateOneMessages(f.rules, ESSAY_MATERIAL, i),
+          maxTokens: 1200,
+          temperature: 0.95,
+          onDelta: (d, full) => {
+            f.live = full;
+            paintForgeLive(full);
+          },
+        });
+      } catch (e1) {
+        got = '';
+      }
+      const clean = String(got || '')
+        .replace(/^\s*好的[，,。]?\s*/, '')
+        .replace(/^\s*-{3,}\s*$/gm, '')
+        .trim();
+      if (clean.length >= 10) {
+        f.passages.push(clean);
+      } else {
+        // 这一段没写出来：再要一次，仍不行就报错回去改规则。
+        const retry = await streamChat({
+          baseUrl: S.settings.baseUrl,
+          apiKey: S.settings.apiKey,
+          model: S.settings.model,
+          effort: S.settings.effort,
+          messages: imitateOneMessages(f.rules, ESSAY_MATERIAL, i),
+          maxTokens: 1800,
+          temperature: 0.9,
+        }).catch(() => '');
+        const c2 = String(retry || '').trim();
+        if (c2.length >= 10) f.passages.push(c2);
+      }
+      f.live = '';
+    }
+    if (f.passages.length < 3) throw new Error('有几段没写出来。再点一次，或者把规则改短一点。');
     f.live = '';
   } catch (err) {
     S.err = err.message || String(err);
     f.stage = 'rules';
   } finally {
     f.busy = false;
+    f.progress = '';
     render();
   }
 }
