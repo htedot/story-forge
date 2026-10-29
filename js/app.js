@@ -676,6 +676,17 @@ function viewSession() {
   const curModel = S.story.model || S.settings.model;
   const qb = quickbar(curModel);
 
+  const lastAi = [...sess.messages].reverse().find((m) => m.role === 'assistant');
+  const opts = !S.busy && lastAi && Array.isArray(lastAi.options) ? lastAi.options : [];
+  const optsHtml = opts.length
+    ? `<div class="opts">${opts
+        .map(
+          (o, i) =>
+            `<button class="opt" data-act="opt-pick" data-i="${i}"><b>${i + 1}</b><span>${esc(o)}</span></button>`
+        )
+        .join('')}</div>`
+    : '';
+
   return `<div class="wrap session">
     <header class="topbar">
       <button class="ico" data-act="session-exit">‹</button>
@@ -687,7 +698,11 @@ function viewSession() {
     ${peek}
     <div class="stream" id="stream">
       ${msgs}
-      ${S.live ? `<div class="ai live">${String(S.live).split(/\n+/).filter(Boolean).map((p) => `<p>${esc(p)}</p>`).join('')}</div>` : ''}
+      ${S.live ? `<div class="ai live">${String(P.splitOut(S.live).body)
+              .split(/\n+/)
+              .filter(Boolean)
+              .map((p) => `<p>${esc(p)}</p>`)
+              .join('')}</div>` : ''}
       ${S.busy && !S.live ? '<div class="ai typing">…</div>' : ''}
       ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
     </div>
@@ -696,6 +711,7 @@ function viewSession() {
       <button class="toolbtn" data-act="ses-regen" ${canUndo && !S.busy ? '' : 'disabled'}>重写这段</button>
       <button class="toolbtn ${S.sesCards ? 'on' : ''}" data-act="ses-cards">看设定</button>
     </div>
+    ${optsHtml}
     <div class="composer">
       <textarea id="say" rows="1" placeholder="我做了什么、说了什么…">${esc(S.input)}</textarea>
       <button class="send" data-act="send" ${S.busy ? 'disabled' : ''}>发</button>
@@ -934,6 +950,13 @@ $app.addEventListener('click', async (e) => {
         return undoSession();
       case 'ses-regen':
         return regenSession();
+      case 'opt-pick': {
+        const s0 = (S.story.sessions || []).find((m) => m.id === S.sessionId);
+        const a = s0 ? [...s0.messages].reverse().find((m) => m.role === 'assistant') : null;
+        const t = a && Array.isArray(a.options) ? a.options[Number(el.dataset.i)] : '';
+        if (t) sendTurn(t);
+        return;
+      }
       case 'ses-cards':
         S.sesCards = !S.sesCards;
         return render();
@@ -1189,7 +1212,8 @@ async function sendTurn(text) {
       },
     });
     S.live = '';
-    sess.messages.push({ role: 'assistant', content: full });
+    const parsed = P.splitOut(full);
+    sess.messages.push({ role: 'assistant', content: parsed.body.trim(), options: parsed.options });
     sess.savedAt = Date.now();
     await save();
   } catch (err) {
@@ -1211,7 +1235,7 @@ function paintLive() {
     if (typing) typing.remove();
     box.appendChild(el);
   }
-  el.innerHTML = String(S.live)
+  el.innerHTML = String(P.splitOut(S.live).body)
     .split(/\n+/)
     .filter(Boolean)
     .map((p) => `<p>${esc(p)}</p>`)
@@ -1242,7 +1266,8 @@ async function firstTurn() {
       },
     });
     S.live = '';
-    sess.messages.push({ role: 'assistant', content: full });
+    const parsed = P.splitOut(full);
+    sess.messages.push({ role: 'assistant', content: parsed.body.trim(), options: parsed.options });
     await save();
   } catch (err) {
     S.err = err.message || String(err);
@@ -1294,7 +1319,8 @@ async function regenSession() {
       },
     });
     S.live = '';
-    sess.messages.push({ role: 'assistant', content: full });
+    const parsed = P.splitOut(full);
+    sess.messages.push({ role: 'assistant', content: parsed.body.trim(), options: parsed.options });
     sess.savedAt = Date.now();
     await save();
   } catch (err) {
