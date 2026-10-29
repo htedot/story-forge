@@ -52,6 +52,7 @@ function readContent(data, model) {
         : '模型返回了空内容，再试一次。'
     );
     err.truncated = finish === 'length';
+    err.empty = true;
     throw err;
   }
   return content;
@@ -108,10 +109,20 @@ export async function chat({
         }
       }
     }
-    // 被截断了：给足额度再来一次。推理模型会把额度烧在思考上，所以放宽到 3 倍。
-    if (e && e.truncated && can) {
+    // 被截断、或者返回空：放宽额度并去掉推理参数再试一次。
+    // 推理模型会把 max_tokens 烧在思考上，最后 content 是空的，这是最常见的失败。
+    if (e && (e.truncated || e.empty) && can) {
       const bigger = Math.min(Math.max(maxTokens * 3, 3000), 8000);
-      if (bigger > maxTokens) return await send(false, bigger, false);
+      if (bigger > maxTokens) {
+        try {
+          return await send(false, bigger, false);
+        } catch (e2) {
+          if (e2 && e2.empty) {
+            throw new Error('模型连着两次一个字都没返回。去设置里换一个模型（deepseek-chat 这类）再试。');
+          }
+          throw e2;
+        }
+      }
     }
     throw e;
   }
