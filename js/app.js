@@ -149,6 +149,8 @@ function render() {
   else if (v === 'book') html = viewBook();
   else if (v === 'card') html = viewCard();
   else if (v === 'session') html = viewSession();
+  else if (v === 'seslist') html = viewSessionList();
+  else if (v === 'sesview') html = viewSessionRead();
   else if (v === 'chapter') html = viewChapter();
 
   $app.innerHTML = html + sheetHtml() + (S.toast ? `<div class="toast">${esc(S.toast)}</div>` : '');
@@ -456,13 +458,14 @@ function tabSet(s) {
 }
 
 function cardRow(c) {
-  const hasSession = (S.story.sessions || []).some((m) => m.cardId === c.id && m.status === 'draft');
+  const n = sessionsOfCard(c.id).length;
+  const hasDraft = (S.story.sessions || []).some((m) => m.cardId === c.id && m.status === 'draft');
   return `<div class="cardrow">
     <button class="grow left" data-act="card" data-id="${c.id}">
-      <b>${esc(c.title)}</b>
+      <b>${esc(c.title)}${n ? `<span class="tag">${n} 场</span>` : ''}</b>
       <span class="dim">${esc(String(c.body || '').replace(/\s+/g, ' ').slice(0, 46) || '还没写内容')}</span>
     </button>
-    <button class="btn sm ${hasSession ? 'on' : ''}" data-act="play" data-id="${c.id}">演绎</button>
+    <button class="btn sm ${hasDraft ? 'on' : ''}" data-act="play" data-id="${c.id}">演绎</button>
   </div>`;
 }
 
@@ -493,12 +496,14 @@ function timeRow(t) {
 
 function tabWrite(s) {
   const chs = s.chapters || [];
+  const st = staleCount();
   return `<button class="btn primary wide" data-act="newchapter">写一章</button>
+  ${st ? `<div class="panel warn"><div class="row-btns"><span class="grow">${st} 章引用的设定或事件改过，建议重写</span></div></div>` : ''}
   <div class="seclabel">草稿与成书</div>
   ${chs.length
     ? chs.map((c) => `<button class="chaprow" data-act="openchap" data-id="${c.id}">
         <span class="no">第 ${c.no || '?'} 章</span>
-        <b>${esc(c.title || '未命名')}</b>
+        <b>${esc(c.title || '未命名')}${c.stale ? '<span class="tag warn">设定已变</span>' : ''}</b>
         <span class="dim">${chars(c.body)} 字 · ${c.status === 'final' ? '已入书' : '草稿'}</span>
       </button>`).join('')
     : '<div class="dim">还没有章节。</div>'}`;
@@ -517,20 +522,118 @@ function tabBook(s) {
     .join('')}</div>`;
 }
 
+/* ---------------- 联动：谁依赖了这张卡 / 这条事件 ---------------- */
+
+function markStaleFromCard(c) {
+  const hitSessions = [];
+  (S.story.sessions || []).forEach((m) => {
+    if (m.cardId === c.id) {
+      m.stale = true;
+      hitSessions.push(m.id);
+    }
+  });
+  (S.story.timeline || []).forEach((t) => {
+    if (t.cardId === c.id) t.stale = true;
+  });
+  (S.story.chapters || []).forEach((h) => {
+    const usesItem = (h.pickedIds || []).some((id) => {
+      const t = (S.story.timeline || []).find((x) => x.id === id);
+      return t && t.cardId === c.id;
+    });
+    const usesSess = (h.sourceSessions || []).some((sid) => hitSessions.includes(sid));
+    if (usesItem || usesSess) h.stale = true;
+  });
+}
+
+function markStaleFromItem(itemId) {
+  (S.story.chapters || []).forEach((h) => {
+    if ((h.pickedIds || []).includes(itemId)) h.stale = true;
+  });
+}
+
+function sessionsOfCard(cardId) {
+  return (S.story.sessions || []).filter((m) => m.cardId === cardId && (m.messages || []).length);
+}
+
+function staleCount() {
+  return (S.story.chapters || []).filter((h) => h.stale).length;
+}
+
 /* ---------------- 卡片编辑 ---------------- */
 
 function viewCard() {
   const c = (S.story.cards || []).find((x) => x.id === S.cardId);
   if (!c) return '<div class="empty">卡片没了</div>';
   const kind = S_.KIND_BY_ID[c.kind] || { name: '设定' };
+  const sess = sessionsOfCard(c.id);
   return `<div class="wrap">
-    ${topbar(kind.name, `<button class="ico" data-act="card-del" data-id="${c.id}">×</button>`)}
+    ${topbar(kind.name + ' · 第 ' + (c.rev || 1) + ' 版', `<button class="ico" data-act="card-del" data-id="${c.id}">×</button>`)}
     <input class="field titlefield" id="card-title" value="${esc(c.title)}" placeholder="标题">
     <textarea class="field big" id="card-body" placeholder="写点什么…">${esc(c.body || '')}</textarea>
+    <div class="hint">改这张卡会让在它之上演过的场、和引用这些场的章被标成「设定已变」，不会自动删掉。</div>
+    ${
+      sess.length
+        ? `<button class="cardrow" data-act="seslist" data-id="${c.id}">
+            <span class="grow left"><b>演绎记录</b><span class="dim">${sess.length} 场，可以翻回去看当时怎么演的</span></span>
+            <span class="chev">›</span>
+          </button>`
+        : ''
+    }
     <div class="row-btns">
       <button class="btn" data-act="back">返回</button>
       <button class="btn primary" data-act="card-save">存</button>
     </div>
+  </div>`;
+}
+
+/* ---------------- 演绎记录（只读回看） ---------------- */
+
+function viewSessionList() {
+  const c = (S.story.cards || []).find((x) => x.id === S.cardId);
+  const list = sessionsOfCard(S.cardId).slice().sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+  return `<div class="wrap">
+    ${topbar('演绎记录 · ' + (c ? c.title : ''))}
+    ${list.length
+      ? list
+          .map((m) => {
+            const n = m.messages.filter((x) => x.role === 'user').length;
+            const t = m.messages.find((x) => x.role === 'ai');
+            return `<button class="trow" data-act="sesview" data-id="${m.id}">
+              <div class="twhen">${esc(new Date(m.savedAt || Date.now()).toLocaleDateString('zh-CN'))}</div>
+              <div class="tbody">
+                <b>${esc(String(t ? t.content : '').replace(/\s+/g, ' ').slice(0, 24) || '（空场）')}</b>
+                <p>${n} 拍 · ${m.status === 'done' ? '已收' : '未收'}${m.stale ? ' · 设定已变' : ''}${m.orphan ? ' · 原卡已删' : ''}</p>
+              </div>
+            </button>`;
+          })
+          .join('')
+      : '<div class="empty"><div class="big">还没有演绎记录</div></div>'}
+  </div>`;
+}
+
+function viewSessionRead() {
+  const sess = (S.story.sessions || []).find((m) => m.id === S.sessionId);
+  if (!sess) return '<div class="empty">记录没了</div>';
+  const card = (S.story.cards || []).find((c) => c.id === sess.cardId);
+  const msgs = sess.messages
+    .map((m) =>
+      m.role === 'user'
+        ? `<div class="me"><div class="bubble">${esc(m.content)}</div></div>`
+        : `<div class="ai">${String(m.content || '')
+            .split(/\n+/)
+            .filter(Boolean)
+            .map((p) => `<p>${esc(p)}</p>`)
+            .join('')}</div>`
+    )
+    .join('');
+  return `<div class="wrap session">
+    <header class="topbar">
+      <button class="ico" data-act="sesview-exit">‹</button>
+      <div class="bt"><b>${esc(card ? card.title : '（原卡已删）')}</b><span>只读回看</span></div>
+      <span class="ico ghost"></span>
+    </header>
+    ${sess.stale ? '<div class="panel warn">这张卡后来改过，当时演的是旧设定。</div>' : ''}
+    <div class="stream">${msgs}</div>
   </div>`;
 }
 
@@ -580,6 +683,7 @@ function viewSession() {
       <button class="ico" data-act="session-close">收</button>
     </header>
     ${qb}
+    ${sess.stale ? '<div class="panel warn">这张卡的设定后来改过，这一场是按旧设定演的。</div>' : ''}
     ${peek}
     <div class="stream" id="stream">
       ${msgs}
@@ -645,16 +749,24 @@ function viewChapter() {
   const paras = String(ch.body || S.live || '')
     .split(/\n+/)
     .filter(Boolean);
+  const isFinal = ch.status === 'final';
+  const hasHist = (ch.history || []).length > 0;
   return `<div class="wrap">
-    ${topbar(ch.title || '这一章', '', 'back')}
+    ${topbar(`第 ${ch.no || '?'} 章`, `<button class="ico" data-act="chap-del">×</button>`)}
+    ${ch.stale ? '<div class="panel warn">这一章写完以后，它引用的设定或事件改过了。重写会按新设定写；你现在这稿会存进「上一稿」，不会丢。</div>' : ''}
     <div class="stream"><div class="prose">${paras
       .map((p, i) => `<p class="pe" data-act="pedit" data-i="${i}">${esc(p)}</p>`)
       .join('')}</div></div>
     <div class="hint">点任意一段可以直接改。</div>
     <div class="row-btns">
-      <button class="btn" data-act="chap-regen" ${S.busy ? 'disabled' : ''}>重写</button>
-      <button class="btn primary" data-act="chap-final" ${S.busy ? 'disabled' : ''}>入书</button>
+      <button class="btn" data-act="chap-regen" ${S.busy ? 'disabled' : ''}>${hasHist ? '重写' : '重写'}</button>
+      ${
+        isFinal
+          ? `<button class="btn" data-act="chap-withdraw" ${S.busy ? 'disabled' : ''}>撤回</button>`
+          : `<button class="btn primary" data-act="chap-final" ${S.busy ? 'disabled' : ''}>入书</button>`
+      }
     </div>
+    ${hasHist ? `<button class="lnk wide" data-act="chap-restore">换回上一稿</button>` : ''}
   </div>`;
 }
 
@@ -760,14 +872,38 @@ $app.addEventListener('click', async (e) => {
       }
       case 'card-save': {
         const c = S.story.cards.find((x) => x.id === S.cardId);
-        c.title = document.getElementById('card-title').value.trim() || '未命名';
-        c.body = document.getElementById('card-body').value;
+        const title = document.getElementById('card-title').value.trim() || '未命名';
+        const body = document.getElementById('card-body').value;
+        const changed = title !== c.title || body !== c.body;
+        c.title = title;
+        c.body = body;
         c.updatedAt = Date.now();
+        if (changed) {
+          c.rev = (c.rev || 1) + 1;
+          markStaleFromCard(c);
+        }
         await save();
-        return back();
+        const n = changed ? staleCount() : 0;
+        back();
+        if (n) toast(`${n} 章引用了旧设定，已标出来`);
+        return;
       }
       case 'card-del': {
-        S.story.cards = S.story.cards.filter((x) => x.id !== S.cardId);
+        const c = S.story.cards.find((x) => x.id === S.cardId);
+        const rel = (S.story.sessions || []).filter((m) => m.cardId === c.id).length;
+        const msg = rel ? `删掉「${c.title}」？\n它有 ${rel} 场演绎记录，会一起标成无主张（不会真的删掉记录）。` : `删掉「${c.title}」？`;
+        if (!confirm(msg)) return;
+        S.story.cards = S.story.cards.filter((x) => x.id !== c.id);
+        (S.story.sessions || []).forEach((m) => {
+          if (m.cardId === c.id) {
+            m.orphan = true;
+            m.stale = true;
+          }
+        });
+        (S.story.timeline || []).forEach((t) => {
+          if (t.cardId === c.id) t.orphan = true;
+        });
+        S.story.pendingSuggestions = (S.story.pendingSuggestions || []).filter((g) => g.cardId !== c.id);
         await save();
         return back();
       }
@@ -835,6 +971,7 @@ $app.addEventListener('click', async (e) => {
         return render();
       case 'tdel':
         S.story.timeline = S.story.timeline.filter((t) => t.id !== id);
+        markStaleFromItem(id);
         await save();
         return render();
       case 'tedit':
@@ -870,8 +1007,24 @@ $app.addEventListener('click', async (e) => {
         return push('chapter');
       case 'chap-final':
         return finalizeChapter();
+      case 'chap-withdraw':
+        return withdrawChapter();
+      case 'chap-del':
+        return deleteChapter();
+      case 'chap-restore':
+        return restoreChapter();
       case 'chap-regen':
         return regenChapter();
+      case 'seslist':
+        S.cardId = id;
+        return push('seslist');
+      case 'sesview':
+        S.sessionId = id;
+        S.readonly = true;
+        return push('sesview');
+      case 'sesview-exit':
+        S.readonly = false;
+        return back();
       case 'forge-start':
         return startForge();
       case 'forge-analyze':
@@ -1263,10 +1416,13 @@ function editTimeline(id) {
   if (title == null) return;
   const detail = prompt('发生了什么', t.detail || '');
   if (detail == null) return;
+  const changed = at !== t.at || title !== t.title || detail !== t.detail;
   t.at = at;
   t.title = title;
   t.detail = detail;
+  if (changed) markStaleFromItem(t.id);
   save().then(render);
+  if (changed && staleCount()) toast(`${staleCount()} 章引用了这条，已标出来`);
 }
 
 async function applySuggestion(id) {
@@ -1285,6 +1441,35 @@ async function applySuggestion(id) {
 
 /* ---------------- 创作 ---------------- */
 
+// 这一章用到的演绎原文（同一场只取一次）
+function transcriptsFor(items) {
+  const seen = new Set();
+  const out = [];
+  items.forEach((t) => {
+    if (!t.sessionId || seen.has(t.sessionId)) return;
+    seen.add(t.sessionId);
+    const sess = (S.story.sessions || []).find((m) => m.id === t.sessionId);
+    if (!sess) return;
+    const card = S.story.cards.find((c) => c.id === sess.cardId);
+    out.push(P.sessionTranscript(sess, card ? card.title : ''));
+  });
+  return { list: out, ids: Array.from(seen) };
+}
+
+// 上一章结尾，保持接续
+function prevTailFor(ch) {
+  const prev = (S.story.chapters || [])
+    .filter((x) => x.id !== ch.id && (x.no || 0) < (ch.no || 0) && (x.body || '').trim())
+    .sort((a, b) => (b.no || 0) - (a.no || 0))[0];
+  return prev ? P.tailOf(prev.body) : '';
+}
+
+function revSnapshot() {
+  const o = {};
+  (S.story.cards || []).forEach((c) => (o[c.id] = c.rev || 1));
+  return o;
+}
+
 async function genChapter() {
   const c = S.chap;
   const items = S.story.timeline
@@ -1297,11 +1482,14 @@ async function genChapter() {
   S.err = '';
   render();
   try {
+    const tr = transcriptsFor(items);
     const ch = S_.newChapter({
       no: (S.story.chapters || []).length + 1,
       title: items[0].title || '未命名',
       span,
       pickedIds: items.map((t) => t.id),
+      sourceSessions: tr.ids,
+      baseRevs: revSnapshot(),
       pov: { ...c.pov, who: c.pov.who.slice() },
       status: 'draft',
     });
@@ -1315,7 +1503,10 @@ async function genChapter() {
       apiKey: S.settings.apiKey,
       model: S.story.model || S.settings.model,
       effort: S.settings.effort,
-      messages: P.chapterMessages(S.story, items, ch.pov, S.style, span),
+      messages: P.chapterMessages(S.story, items, ch.pov, S.style, span, {
+        transcripts: tr.list,
+        prevTail: prevTailFor(ch),
+      }),
       maxTokens: 4000,
       temperature: 1.0,
       onDelta: (d, acc) => {
@@ -1346,6 +1537,7 @@ async function regenChapter() {
   const ch = (S.story.chapters || []).find((x) => x.id === S.chapterId);
   if (!ch) return;
   const items = S.story.timeline.filter((t) => ch.pickedIds.includes(t.id)).sort((a, b) => a.order - b.order);
+  const tr = transcriptsFor(items);
   S.busy = true;
   render();
   try {
@@ -1354,7 +1546,10 @@ async function regenChapter() {
       apiKey: S.settings.apiKey,
       model: S.story.model || S.settings.model,
       effort: S.settings.effort,
-      messages: P.chapterMessages(S.story, items, ch.pov, S.style, ch.span),
+      messages: P.chapterMessages(S.story, items, ch.pov, S.style, ch.span, {
+        transcripts: tr.list,
+        prevTail: prevTailFor(ch),
+      }),
       maxTokens: 4000,
       onDelta: (d, acc) => {
         S.live = acc;
@@ -1368,7 +1563,11 @@ async function regenChapter() {
         }
       },
     });
+    if (ch.body) {
+      ch.history = [{ body: ch.body, at: Date.now() }, ...(ch.history || [])].slice(0, 3);
+    }
     ch.body = full;
+    ch.stale = false;
     S.live = '';
     await save();
   } catch (err) {
@@ -1383,10 +1582,40 @@ async function finalizeChapter() {
   const ch = (S.story.chapters || []).find((x) => x.id === S.chapterId);
   if (!ch || !ch.body) return;
   ch.status = 'final';
+  ch.stale = false;
   await save();
   S.view = 'book';
   S.tab = 'write';
   toast('已入书');
+  render();
+}
+
+async function withdrawChapter() {
+  const ch = (S.story.chapters || []).find((x) => x.id === S.chapterId);
+  if (!ch) return;
+  ch.status = 'draft';
+  await save();
+  toast('已从成书里撤回，可以接着改');
+  render();
+}
+
+async function deleteChapter() {
+  const ch = (S.story.chapters || []).find((x) => x.id === S.chapterId);
+  if (!ch) return;
+  if (!confirm(`删掉第 ${ch.no} 章「${ch.title}」？\n删了就找不回来。`)) return;
+  S.story.chapters = (S.story.chapters || []).filter((x) => x.id !== ch.id);
+  await save();
+  back();
+}
+
+async function restoreChapter() {
+  const ch = (S.story.chapters || []).find((x) => x.id === S.chapterId);
+  if (!ch || !(ch.history || []).length) return;
+  const old = ch.history[0];
+  ch.history = [{ body: ch.body, at: Date.now() }, ...ch.history.slice(1)].slice(0, 3);
+  ch.body = old.body;
+  await save();
+  toast('已换回上一稿');
   render();
 }
 
