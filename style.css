@@ -1317,3 +1317,45 @@ select.field { background-image: none; }
 .pad {
   padding: 18px 16px;
 }
+
+/* 演绎的三条路 */
+.opts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0 10px;
+}
+.opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 11px 14px;
+  border: 1px solid var(--sep);
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  color: var(--label);
+  font-family: inherit;
+  font-size: 14.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+.opt:active { transform: scale(0.985); background: var(--card2); }
+.opt b {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 1.5px;
+  border-radius: 50%;
+  background: var(--grad);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+.opt span { flex: 1; }
