@@ -325,7 +325,7 @@ const ANALYZE_SYS = `你会读到一个人随手写的一小段话。请从中�
 
 第一件，用三行写下你读到了什么。每行以「读到：」开头，后面跟一句话。必须具体，指得出东西：句子多长、从哪儿起头、停在哪里、有没有打比方、情绪是写出来还是绕开只写动作、有没有用括号。不要说他文笔好、有文学感、有张力、细腻。
 
-第二件，把这套习惯写成一份「写作规则」，交给另一个 AI 照着写。6 到 9 条，每条一行，以「· 」开头。
+第二件，把这套习惯写成一份「写作规则」，交给另一个 AI 照着写。6 到 9 条，每条一行，直接写内容，不要加 · 或编号，不要分小标题。
 每条必须是可执行的动作——怎么写。不能是形容词——写得怎样。
 不要出现这些词：优美、细腻、有张力、引人入胜、生动、深刻、丰富、独特、流畅。
 没把握的不要写。宁可少写两条。
@@ -341,30 +341,57 @@ export function analyzeMessages(essay) {
 
 const stripMark = (s) => String(s || '').replace(/^\s*(?:\d+[.、)）]|[-*•·‣∙])\s*/, '').trim();
 
+const RULE_HEADER =
+  /^[（(【\[]?\s*(?:写作规则|新的?规则|修改后的规则|规则如下|规则|以下是规则)\s*[）)】\]]?\s*[:：]?$/;
+
+/**
+ * 把一段「规则」收拾成可以直接编辑的纯文本：一行一条，不带符号。
+ * 这里刻意不做结构化解析——规则本来就是人读的文本，
+ * 强行按固定格式拆只会在模型换一种排版时全崩。
+ */
+export function cleanRules(raw) {
+  let t = String(raw || '').replace(/\r/g, '').trim();
+  if (!t) return '';
+  t = t.replace(/^```[a-zA-Z]*\s*/, '').replace(/```\s*$/, '').trim();
+  const out = [];
+  for (const rawLine of t.split('\n')) {
+    let line = rawLine.trim();
+    if (!line) continue;
+    if (RULE_HEADER.test(line)) continue;
+    line = line.replace(/^\*\*(.+?)\*\*$/, '$1').replace(/^__(.+?)__$/, '$1').trim();
+    line = line
+      .replace(/^[-–—*·•‣∙]+\s*/, '')
+      .replace(/^(?:\d+[.、)）]|[（(]\d+[）)])\s*/, '')
+      .trim();
+    if (line) out.push(line);
+  }
+  return out.join('\n').trim();
+}
+
 export function parseAnalyze(raw) {
   const lines = String(raw || '')
-    .split(/\r?\n/)
+    .replace(/\r/g, '')
+    .split('\n')
     .map((s) => s.trim())
     .filter(Boolean);
   const read = [];
-  const rules = [];
+  const ruleLines = [];
   for (const line of lines) {
-    const m = stripMark(line).match(/^读到\s*[：:]\s*(.+)$/);
+    const bare = stripMark(line);
+    const m = bare.match(/^(?:读到|观察|看出|我读到)\s*[：:]\s*(.+)$/);
     if (m) {
       read.push(m[1].trim());
       continue;
     }
-    const r = line.match(/^[·•‣∙]\s*(.+)$/);
-    if (r && r[1].trim().length >= 4) rules.push(r[1].trim());
+    ruleLines.push(line);
   }
-  if (!rules.length) {
-    for (const line of lines) {
-      const bare = stripMark(line);
-      if (/^读到/.test(bare)) continue;
-      if (bare.length >= 4 && bare.length <= 90) rules.push(bare);
-    }
-  }
-  return { read: read.slice(0, 3), rules: rules.slice(0, 12) };
+  const text = cleanRules(ruleLines.join('\n'));
+  const rules = text
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 12);
+  return { read: read.slice(0, 3), rules, text: rules.join('\n') };
 }
 
 const IMITATE_SYS = `你会拿到一份「写作规则」。请照着它写四段文字。
@@ -403,7 +430,7 @@ const REVISE_SYS = `一个人写了一份「写作规则」，AI 照着它写了
 - 如果四段都被排得很差，说明规则整体偏了，重写。
 - 如果他说「都不像」并给了话，以那句话为准。
 
-输出一份新的完整规则，6 到 9 条，每条一行，以「· 」开头。
+输出一份新的完整规则，6 到 9 条，每条一行，直接写内容，不要加 · 或编号，不要分小标题。
 只输出规则。不要解释，不要总结，不要说他很有眼光。
 不要出现这些词：优美、细腻、有张力、引人入胜、生动、深刻、丰富、独特、流畅。`;
 
@@ -428,19 +455,10 @@ export function reviseMessages(rules, passages, order, note) {
 }
 
 export function parseRules(raw) {
-  const lines = String(raw || '')
-    .split(/\r?\n/)
+  return cleanRules(raw)
+    .split('\n')
     .map((s) => s.trim())
-    .filter(Boolean);
-  const rules = [];
-  for (const line of lines) {
-    const r = line.match(/^[·•‣∙]\s*(.+)$/);
-    if (r && r[1].trim().length >= 4) rules.push(r[1].trim());
-  }
-  if (rules.length) return rules.slice(0, 12);
-  return lines
-    .map(stripMark)
-    .filter((l) => l.length >= 4 && l.length <= 90)
+    .filter((s) => s.length >= 4)
     .slice(0, 12);
 }
 
