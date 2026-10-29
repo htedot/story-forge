@@ -102,9 +102,10 @@ export function timelineMessages(story, session, card) {
 
 /* ---------------- 写成一章 ---------------- */
 
-export function chapterMessages(story, items, pov, style, span) {
+export function chapterMessages(story, items, pov, style, span, extra) {
   const mode = pov.mode || 'third';
   const who = (pov.who || []).map((id) => (story.cards || []).find((c) => c.id === id)).filter(Boolean);
+  const ex = extra || {};
 
   const povLine =
     mode === 'first' && who.length
@@ -116,6 +117,20 @@ export function chapterMessages(story, items, pov, style, span) {
   const events = items.map((t, i) => `${i + 1}. ${t.at ? t.at + '，' : ''}${t.title}：${t.detail}`).join('\n');
 
   const styleText = brief(style);
+
+  const transcripts = (ex.transcripts || []).length
+    ? [
+        '',
+        '【这场戏的原始演绎】',
+        '下面是作者当时实际演出来的内容，是这一章最可靠的材料。',
+        '取里面的具体动作、语气、物件和原话；把对话记录转化成叙述，不要把「作者：」「演绎：」这种格式写进小说。',
+        (ex.transcripts || []).map((t) => `—— ${t.title} ——\n${t.text}`).join('\n\n'),
+      ].join('\n')
+    : '';
+
+  const prev = ex.prevTail
+    ? ['', '【上一章最后一段】', ex.prevTail, '接着这个往下写，不要重复上一章已经交代过的信息。'].join('\n')
+    : '';
 
   return [
     {
@@ -129,16 +144,35 @@ export function chapterMessages(story, items, pov, style, span) {
         '',
         '【写这一章】',
         povLine,
-        '- 只用下面这些事件，不要新增重大情节。细节可以补，事实不能变。',
+        '- 下面的事件是事实骨架，不许改；原始演绎里的细节可以取用，但要写成小说，不是记录。',
         '- 一整章，1200–2500 字。分段，不要小标题，不要解说，不要写「本章完」。',
         '- 开头直接进入场面，不要交代背景。',
-      ].join('\n'),
+        prev,
+      ]
+        .filter(Boolean)
+        .join('\n'),
     },
     {
       role: 'user',
-      content: `这一章覆盖：${span && span.from ? span.from : '未标'} 到 ${span && span.to ? span.to : '未标'}\n\n事件：\n${events}\n\n现在写这一章。`,
+      content: `这一章覆盖：${span && span.from ? span.from : '未标'} 到 ${span && span.to ? span.to : '未标'}\n\n事件：\n${events}${transcripts}\n\n现在写这一章。`,
     },
   ];
+}
+
+// 把一场演绎压成纯文本，供写章节时取用；超长时保留结尾（结尾通常是这一场真正发生的事）
+export function sessionTranscript(session, cardTitle, budget = 2600) {
+  const lines = (session.messages || [])
+    .map((m) => (m.role === 'user' ? '作者：' : '演绎：') + String(m.content || '').trim())
+    .filter((x) => x.length > 2);
+  let text = lines.join('\n');
+  if (text.length > budget) text = '……（前略）\n' + text.slice(text.length - budget);
+  return { title: session.title || cardTitle || '一场演绎', text };
+}
+
+// 取上一章结尾，保持接续
+export function tailOf(text, n = 320) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  return s.length > n ? '…' + s.slice(s.length - n) : s;
 }
 
 /* ---------------- 杂项 ---------------- */
