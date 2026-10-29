@@ -266,10 +266,10 @@ function viewForge() {
       <div class="dim">不用完整，不用讲究。写你平时会写的那样，三五句就够。</div>
       <div class="matbox"><span>就写这个</span>${esc(ESSAY_MATERIAL)}</div>
       <textarea id="essay" rows="8" placeholder="从这一句往下写，写到你自然停下来为止。">${esc(f.essay || '')}</textarea>
-      <div class="pasterow"><button class="lnk" data-act="paste-essay">从剪贴板粘贴</button></div>
     </div>
     <div class="row-btns">
-      <button class="btn ghost" data-act="forge-skip">跳过去，我自己写规则</button>
+      <button class="btn ghost" data-act="forge-skip">跳过去</button>
+      <button class="btn ghost" data-act="paste-essay">粘贴</button>
       <button class="btn primary" data-act="forge-analyze" ${f.busy ? 'disabled' : ''}>让它看</button>
     </div>
     ${f.busy ? '<div class="dim center pad">正在读你写的那一段…</div>' : ''}`;
@@ -285,11 +285,11 @@ function viewForge() {
       <div class="seclabel">写作规则${f.round > 1 ? ` · 第 ${f.round} 版` : ''}</div>
       <div class="dim">这几条可以直接改。以后写小说，叙述就按这几条来。</div>
       <textarea id="forge-rules" rows="11">${esc(f.rules || '')}</textarea>
-      <div class="pasterow"><button class="lnk" data-act="paste-rules">从剪贴板粘贴</button></div>
     </div>
     ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
     <div class="row-btns">
-      <button class="btn ghost" data-act="forge-back-essay">回去重写那段</button>
+      <button class="btn ghost" data-act="forge-back-essay">回去重写</button>
+      <button class="btn ghost" data-act="paste-rules">粘贴</button>
       <button class="btn primary" data-act="forge-imitate" ${f.busy ? 'disabled' : ''}>让它照这个写四段</button>
     </div>`;
   }
