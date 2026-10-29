@@ -1,7 +1,7 @@
 import { chat, streamChat, listModels, pickModel, testConnection } from './api.js';
 import * as S_ from './store.js';
 import * as P from './prompt.js';
-import { AXES, AXIS_BY_ID, probeMessages, parseProbe, estimateLevel, brief, describe, PROBE_MATERIAL, analyzeMessages, parseAnalyze, imitateMessages, parsePassages, reviseMessages, parseRules, rulesToText, ESSAY_MATERIAL } from './style-engine.js';
+import { AXES, AXIS_BY_ID, probeMessages, parseProbe, estimateLevel, brief, describe, PROBE_MATERIAL, analyzeMessages, parseAnalyze, imitateMessages, parsePassages, reviseMessages, parseRules, rulesToText, cleanRules, ESSAY_MATERIAL } from './style-engine.js';
 
 const $app = document.getElementById('app');
 
@@ -1703,7 +1703,7 @@ async function forgeAnalyze() {
     });
     const got = parseAnalyze(out);
     f.read = got.read;
-    f.rules = rulesToText(got.rules);
+    f.rules = got.text || rulesToText(got.rules);
     if (!String(f.rules).trim()) throw new Error('这次没拆出规则来，再试一次，或者跳过去自己写。');
     f.stage = 'rules';
   } catch (err) {
@@ -1736,7 +1736,7 @@ async function forgeImitate() {
       model: S.settings.model,
       effort: S.settings.effort,
       messages: imitateMessages(f.rules, ESSAY_MATERIAL),
-      maxTokens: 1800,
+      maxTokens: 2600,
       temperature: 0.95,
       onDelta: (d, full) => {
         f.live = full;
@@ -1778,9 +1778,9 @@ async function forgeRevise() {
       maxTokens: 1800,
       temperature: 0.5,
     });
-    const rules = parseRules(out);
-    if (!rules.length) throw new Error('这次没改出东西。规则还是上一版，可以直接敲定，或者再排一轮。');
-    f.rules = rulesToText(rules);
+    const next = cleanRules(out);
+    if (!next) throw new Error('这次没改出东西。规则还是上一版，可以直接敲定，或者再排一轮。');
+    f.rules = next;
     f.round += 1;
     f.passages = [];
     f.order = [];
