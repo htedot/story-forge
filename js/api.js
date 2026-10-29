@@ -135,7 +135,7 @@ function effortFields(effort) {
 }
 
 // 流式。边写边出字，是全篇体感的关键。
-export async function streamChat({
+async function streamOnce({
   baseUrl,
   apiKey,
   model,
@@ -180,6 +180,8 @@ export async function streamChat({
   const decoder = new TextDecoder();
   let buf = '';
   let full = '';
+  let thinking = '';
+  let finish = '';
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -199,7 +201,11 @@ export async function streamChat({
       } catch {
         continue;
       }
-      const d = j?.choices?.[0]?.delta?.content;
+      const ch0 = j?.choices?.[0];
+      if (ch0?.finish_reason) finish = ch0.finish_reason;
+      const rc = ch0?.delta?.reasoning_content;
+      if (typeof rc === 'string' && rc) thinking += rc;
+      const d = ch0?.delta?.content;
       if (typeof d === 'string' && d) {
         full += d;
         if (onDelta) onDelta(d, full);
@@ -207,8 +213,55 @@ export async function streamChat({
     }
   }
 
-  if (!full.trim()) throw new Error('模型这次一个字都没返回，再试一次。');
-  return full;
+  return { text: full, thinking, finish };
+}
+
+/**
+ * 流式。边写边出字，是全篇体感的关键。
+ * 空返回是这类接口最常见的坑：推理模型会把 max_tokens 全烧在思考上，
+ * 正文一个字都不剩。所以这里三层兜底：原样来一次 → 加额度去掉推理参数 →
+ * 退回非流式，只要拿到字就不让用户看到报错。
+ */
+export async function streamChat(opts) {
+  const { baseUrl, apiKey, model, messages, maxTokens = 900, temperature = 1.0, effort = 'off', signal, onDelta } = opts;
+
+  const first = await streamOnce(opts);
+  if (String(first.text || '').trim()) return first.text;
+
+  const bigger = Math.min(Math.max(maxTokens * 2, 2400), 8000);
+  const second = await streamOnce({ ...opts, maxTokens: bigger, effort: 'off', onDelta: null });
+  if (String(second.text || '').trim()) {
+    if (onDelta) onDelta(second.text, second.text);
+    return second.text;
+  }
+
+  if (!signal?.aborted) {
+    const plain = await chat({
+      baseUrl,
+      apiKey,
+      model,
+      messages,
+      json: false,
+      maxTokens: bigger,
+      temperature,
+      effort: 'off',
+      signal,
+    });
+    if (String(plain || '').trim()) {
+      if (onDelta) onDelta(plain, plain);
+      return plain;
+    }
+  }
+
+  if (second.thinking || first.thinking) {
+    throw new Error(
+      `模型这次只输出了思考过程，正文是空的（${model || '当前模型'}）。把推理等级调成「关」，或者换 deepseek-chat 这类非推理模型。`
+    );
+  }
+  if (second.finish === 'length' || first.finish === 'length') {
+    throw new Error(`写一半额度就用完了（${model || '当前模型'}）。把推理等级调成「关」再试，或者换一个更省额度的模型。`);
+  }
+  throw new Error('模型这次一个字都没返回。去设置里换一个模型（deepseek-chat 这类）试试，或者把推理等级关掉。');
 }
 
 export async function listModels(baseUrl, apiKey) {
