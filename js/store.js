@@ -87,6 +87,7 @@ export function newCard(kind = 'character', seed = {}) {
       kind,
       title: kind === 'character' ? '新角色' : KIND_BY_ID[kind].name,
       body: '',
+      rev: 1,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     },
@@ -130,6 +131,8 @@ export function newTimelineItem(seed = {}) {
       sessionId: '',
       status: 'pending',
       order: 0,
+      stale: false,
+      orphan: false,
     },
     seed
   );
@@ -145,6 +148,9 @@ export function newSession(cardId, seed = {}) {
       status: 'draft',
       savedAt: Date.now(),
       result: null,
+      baseRevs: {},
+      stale: false,
+      orphan: false,
     },
     seed
   );
@@ -160,6 +166,10 @@ export function newChapter(seed = {}) {
       pov: { mode: 'third', who: [] },
       span: { from: '', to: '' },
       pickedIds: [],
+      sourceSessions: [],
+      baseRevs: {},
+      stale: false,
+      history: [],
       status: 'draft',
       createdAt: Date.now(),
     },
@@ -183,6 +193,25 @@ function normalizeStory(s) {
   if (!Array.isArray(s.sessions)) s.sessions = [];
   if (!Array.isArray(s.chapters)) s.chapters = [];
   if (typeof s.notes !== 'string') s.notes = '';
+  // 联动字段回填（老数据没有这些）
+  s.cards.forEach((c) => {
+    if (!c.rev) c.rev = 1;
+  });
+  s.timeline.forEach((t) => {
+    if (typeof t.stale !== 'boolean') t.stale = false;
+    if (typeof t.orphan !== 'boolean') t.orphan = !!t.cardId && !s.cards.some((c) => c.id === t.cardId);
+  });
+  s.sessions.forEach((m) => {
+    if (!m.baseRevs) m.baseRevs = {};
+    if (typeof m.stale !== 'boolean') m.stale = false;
+    if (typeof m.orphan !== 'boolean') m.orphan = !s.cards.some((c) => c.id === m.cardId);
+  });
+  s.chapters.forEach((h) => {
+    if (!Array.isArray(h.sourceSessions)) h.sourceSessions = [];
+    if (!Array.isArray(h.history)) h.history = [];
+    if (!h.baseRevs) h.baseRevs = {};
+    if (typeof h.stale !== 'boolean') h.stale = false;
+  });
   return s;
 }
 
