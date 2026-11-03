@@ -8,6 +8,25 @@ const $app = document.getElementById('app');
 // 自检用的种子文本；正常发布时留空串。
 const DEV_SEED = '我站在冷柜前面站了很久，一直没有打开柜门。店员在后面理货，塑料袋的声音停了一下，又响起来。我数了数口袋里的东西：一个手机，一张不认识的卡，还有半包纸巾。手机没电了，屏幕怎么按都不亮。我把那张卡翻过来，背面用圆珠笔写了一串数字，看不清是几位。最后我什么也没买，从侧门出去了。';
 
+// 开发自检模式：种子非空即视为开发态，会在左下角显示最近一次动作。
+const DEV = !!DEV_SEED;
+
+/* ---------------- 出错看得见 ---------------- */
+// 任何未捕获的异常都写进页面顶部，不要「点了没反应」。
+window.__sfError = (where, err) => {
+  const msg = `${where}：${(err && (err.stack || err.message)) || err}`;
+  window.__sfLastError = msg;
+  try {
+    const box = document.getElementById('fatal');
+    if (box) {
+      box.textContent = msg;
+      box.classList.add('on');
+    }
+  } catch (e) {}
+};
+window.addEventListener('error', (e) => window.__sfError('脚本出错', e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => window.__sfError('异步出错', e.reason));
+
 const S = {
   ready: false,
   settings: null,
@@ -156,8 +175,20 @@ function render() {
   else if (v === 'sesview') html = viewSessionRead();
   else if (v === 'chapter') html = viewChapter();
 
-  $app.innerHTML = html + sheetHtml() + (S.toast ? `<div class="toast">${esc(S.toast)}</div>` : '');
+  $app.innerHTML =
+    html +
+    sheetHtml() +
+    (S.toast ? `<div class="toast">${esc(S.toast)}</div>` : '') +
+    '<div id="fatal"></div>' +
+    (DEV ? '<div id="devact"></div>' : '');
   afterRender();
+  const fatal = document.getElementById('fatal');
+  if (fatal && window.__sfLastError) {
+    fatal.textContent = window.__sfLastError;
+    fatal.classList.add('on');
+  }
+  const dev = document.getElementById('devact');
+  if (dev) dev.textContent = S.lastAct ? `act: ${S.lastAct}` : 'act: —';
 }
 
 function topbar(title, right = '', left = 'back') {
@@ -304,12 +335,12 @@ function viewForge() {
       <div class="dim">同一个材料，四种写法。等下你要把它们从最差排到最好。</div>
       ${f.busy ? `<div class="dim pad" id="progress">${esc(f.progress || '正在写…')}</div>` : ''}
       ${f.busy ? `<div class="live" id="live">${esc(f.live || '')}</div>` : ''}
-      ${!f.busy && f.passages.length ? f.passages.map((p, i) => `<div class="passage"><b>${i + 1}</b><p>${esc(p)}</p></div>`).join('') : ''}
+      ${!f.busy && (f.passages || []).length ? f.passages.map((p, i) => `<div class="passage"><b>${i + 1}</b><p>${esc(p)}</p></div>`).join('') : ''}
     </div>
     ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
     <div class="row-btns">
       <button class="btn ghost" data-act="forge-back-rules">规则不对，回去改</button>
-      <button class="btn primary" data-act="forge-to-rank" ${f.busy || f.passages.length < 3 ? 'disabled' : ''}>排一下序</button>
+      <button class="btn primary" data-act="forge-to-rank" ${f.busy || (f.passages || []).length < 3 ? 'disabled' : ''}>排一下序</button>
     </div>`;
   }
 
@@ -318,8 +349,8 @@ function viewForge() {
     <div class="panel">
       <div class="seclabel">从最差排到最好</div>
       <div class="dim">依次点四段。第一下＝最差，第四下＝最好。点错了再点一下取消。</div>
-      ${f.passages.map((p, i) => {
-        const pos = f.order.indexOf(i);
+      ${(f.passages || []).map((p, i) => {
+        const pos = (f.order || []).indexOf(i);
         return `<div class="pickcard ${pos >= 0 ? 'picked' : ''}" data-act="rank-pick" data-id="${i}">
           <b>${i + 1}</b>
           ${pos >= 0 ? `<em>${pos + 1}</em>` : ''}
@@ -327,12 +358,12 @@ function viewForge() {
         </div>`;
       }).join('')}
       <input class="field" id="forge-note" value="${esc(f.note || '')}" placeholder="还有话说就写一句：哪里最不像你">
-      <div class="ordersum">${f.order.length ? `你排的：${f.order.map((i) => i + 1).join(' → ')}　（${f.order.length}/4）` : '还没开始排。从你觉得最差的那段点起。'}</div>
+      <div class="ordersum">${(f.order || []).length ? `你排的：${f.order.map((i) => i + 1).join(' → ')}　（${f.order.length}/4）` : '还没开始排。从你觉得最差的那段点起。'}</div>
     </div>
     ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
     <div class="row-btns">
       <button class="btn ghost" data-act="forge-to-imitate">再写四段</button>
-      <button class="btn primary" data-act="forge-revise" ${f.busy || f.order.length < 4 ? 'disabled' : ''}>按这个改规则</button>
+      <button class="btn primary" data-act="forge-revise" ${f.busy || (f.order || []).length < 4 ? 'disabled' : ''}>按这个改规则</button>
     </div>`;
   }
 
@@ -851,6 +882,7 @@ $app.addEventListener('click', async (e) => {
   if (e.target.closest('[data-stop]') && !el.closest('button')) return;
   const act = el.dataset.act;
   const id = el.dataset.id;
+  S.lastAct = act + (id != null ? `#${id}` : '');
 
   try {
     switch (act) {
@@ -1078,15 +1110,18 @@ $app.addEventListener('click', async (e) => {
       case 'forge-to-imitate':
         return forgeImitate();
       case 'forge-to-rank':
-        if (S.forge.passages.length < 3) return;
+        if ((S.forge.passages || []).length < 3) return;
         S.forge.stage = 'rank';
         S.forge.order = [];
+        S.forge.note = '';
         return render();
       case 'rank-pick': {
         const idx = Number(id);
+        if (!S.forge.order) S.forge.order = [];
         const pos = S.forge.order.indexOf(idx);
         if (pos >= 0) S.forge.order.splice(pos, 1);
         else if (S.forge.order.length < 4) S.forge.order.push(idx);
+        S.forge.note = document.getElementById('forge-note') ? document.getElementById('forge-note').value : S.forge.note;
         return render();
       }
       case 'forge-revise':
@@ -1154,7 +1189,12 @@ $app.addEventListener('click', async (e) => {
     }
   } catch (err) {
     S.err = err.message || String(err);
-    render();
+    window.__sfError(`点击 ${S.lastAct} 时出错`, err);
+    try {
+      render();
+    } catch (e2) {
+      window.__sfError(`点击 ${S.lastAct} 后渲染又出错`, e2);
+    }
   }
 });
 
