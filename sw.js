@@ -1,6 +1,6 @@
 // 同源静态文件：先走网络，拿到就用新的并顺手更新缓存；断网了才回落到缓存。
 // 这样改完代码刷新一次就生效，不会被旧缓存卡住。
-const CACHE = 'sf-v21';
+const CACHE = 'sf-v22';
 const ASSETS = [
   './',
   './index.html',
@@ -11,6 +11,9 @@ const ASSETS = [
   './js/prompt.js',
   './js/store.js',
   './js/style-engine.js',
+  './js/corpus.js',
+  './js/guard.js',
+  './js/entry.js',
   './icon-192.png',
   './icon-512.png',
 ];
