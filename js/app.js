@@ -230,11 +230,25 @@ function drawerHTML() {
         : '<p class="dim">还没有义务。</p>') +
       `<div class="drow"><input class="field" id="ob-new" placeholder="这一场还差什么"><button class="btn ghost" data-act="ob-add">加</button></div>`;
   } else {
+    const legacy = Array.isArray(st.legacy) ? st.legacy : [];
     body = `<div class="drow"><input class="field" id="book-title" value="${esc(st.title)}"><button class="btn ghost" data-act="rename">改名</button></div>
       <div class="drow"><button class="btn ghost wide" data-act="go-chapter">看整本</button></div>
       <div class="drow"><button class="btn ghost wide" data-act="export">导出 txt</button></div>
       <div class="drow"><button class="btn ghost wide" data-act="go-forge">文风</button></div>
-      <div class="drow"><button class="btn ghost wide" data-act="go-settings">设置</button></div>`;
+      <div class="drow"><button class="btn ghost wide" data-act="go-settings">设置</button></div>
+      ${
+        legacy.length
+          ? `<div class="seclabel" style="margin-top:18px">旧设定（可长按复制，想用就重打一遍）</div>` +
+            legacy
+              .map(
+                (x) =>
+                  `<div class="panel"><div class="seclabel">${esc(x.title)}</div><p class="dim" style="white-space:pre-wrap;color:var(--ink2);font-size:14px">${esc(
+                    x.text
+                  )}</p></div>`
+              )
+              .join('')
+          : ''
+      }`;
   }
   return `<div class="mask" data-act="drawer-close">
     <aside class="drawer" data-stop="1">
