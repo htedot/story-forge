@@ -1136,7 +1136,7 @@ $app.addEventListener('click', async (e) => {
         const key = String(val('set-key', '') || '').trim() || S.settings.apiKey;
         S.settings = S_.saveSettings({ baseUrl: String(val('set-url', '') || S.settings.baseUrl).trim(), apiKey: key });
         try {
-          const list = await listModels({ baseUrl: S.settings.baseUrl, apiKey: S.settings.apiKey });
+          const list = await listModels(S.settings.baseUrl, S.settings.apiKey);
           if (!list.length) {
             S.testMsg = '连接是通的，但这个地址没报出任何模型。可以直接用，模型名照手填。';
           } else {
