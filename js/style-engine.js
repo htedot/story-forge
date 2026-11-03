@@ -365,6 +365,8 @@ export function cleanRules(raw) {
       .replace(/^[-–—*·•‣∙]+\s*/, '')
       .replace(/^(?:\d+[.、)）]|[（(]\d+[）)])\s*/, '')
       .trim();
+    // 行内残留的加粗标记一并去掉（- **规则** 这种写法很常见）
+    line = line.replace(/\*\*/g, '').replace(/__/g, '').trim();
     if (line) out.push(line);
   }
   return out.join('\n').trim();
