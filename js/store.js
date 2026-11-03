@@ -1,5 +1,7 @@
 // 本地存储：IndexedDB 存书与文风；localStorage 存设置与当前书。
 
+import { normalizeCorpus } from './corpus.js';
+
 const DB_NAME = 'storyforge';
 const DB_VERSION = 3;
 
@@ -193,6 +195,9 @@ export function normalizeStory(raw) {
     at: h.at || Date.now(),
     history: Array.isArray(h.history) ? h.history : [],
   }));
+
+  // 正文主干（段落/场/事实/义务/人物/硬约束）
+  normalizeCorpus(story);
 
   return story;
 }
