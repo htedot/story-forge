@@ -1,327 +1,309 @@
-// 存储：设置走 localStorage，书和文风走 IndexedDB。
-// 数据只在这台设备上，不上传任何地方。
+// 本地存储：IndexedDB 存书与文风；localStorage 存设置与当前书。
 
 const DB_NAME = 'storyforge';
-const DB_VERSION = 2;
-const S_STORY = 'stories';
-const S_STYLE = 'styles';
-const LS_SETTINGS = 'storyforge.settings';
-const LS_CURRENT = 'storyforge.current';
+const DB_VERSION = 3;
 
-let dbPromise = null;
+// 五种卡。single 表示一部书只能有一张。
+export const CARD_KINDS = {
+  world: {
+    name: '世界观',
+    single: true,
+    hint: '这个世界怎么运作、谁在什么位置、现在是什么局面。',
+    sections: ['世界规则', '地理与社会', '势力', '当下局势'],
+  },
+  outline: {
+    name: '大纲',
+    single: true,
+    hint: '主干和场面走向。事件是它的组成单元，会投影到时间轴上。',
+    sections: ['主干', '分场要点'],
+  },
+  narrative: {
+    name: '叙事形式',
+    single: false,
+    hint: '一本书可以有几套讲法：视角、时态、声音、体例。写章节时挑一套。',
+    sections: ['视角与距离', '时态与人称', '声音层次', '体例'],
+  },
+  setting: {
+    name: '设定',
+    single: false,
+    hint: '一条具体的设定：一个制度、一个地方、一件东西、一条规矩。',
+    sections: ['是什么', '怎么运作', '代价与限制', '牵扯到谁'],
+  },
+  character: {
+    name: '角色',
+    single: false,
+    hint: '一个人：他是谁、要什么、不肯说什么、怎么说话。',
+    sections: ['是谁', '想要什么', '不肯说的', '说话方式'],
+  },
+};
 
-function openDb() {
-  if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(S_STORY)) db.createObjectStore(S_STORY, { keyPath: 'id' });
-      if (!db.objectStoreNames.contains(S_STYLE)) db.createObjectStore(S_STYLE, { keyPath: 'id' });
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error('打不开本地数据库'));
-  });
-  return dbPromise;
+export const KIND_ORDER = ['world', 'outline', 'narrative', 'setting', 'character'];
+
+const uid = (p = 'x') => p + Date.now().toString(36).slice(-5) + Math.random().toString(36).slice(2, 7);
+
+export function newCard(kind, title) {
+  const def = CARD_KINDS[kind] || CARD_KINDS.setting;
+  const card = {
+    id: uid('c'),
+    kind: CARD_KINDS[kind] ? kind : 'setting',
+    title: title || def.name,
+    sections: def.sections.map((label) => ({ label, text: '' })),
+    at: Date.now(),
+  };
+  if (card.kind === 'outline') card.events = [];
+  return card;
 }
 
-function tx(name, mode, fn) {
-  return openDb().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const t = db.transaction(name, mode);
-        const store = t.objectStore(name);
-        let result;
-        try {
-          result = fn(store);
-        } catch (e) {
-          reject(e);
-          return;
-        }
-        t.oncomplete = () => resolve(result);
-        t.onerror = () => reject(t.error);
-        t.onabort = () => reject(t.error);
-      })
-  );
+export function newEvent(title, when, summary) {
+  return { id: uid('e'), title: title || '', when: when || '', summary: summary || '', done: false };
 }
 
-function getAll(name) {
-  return openDb().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const req = db.transaction(name, 'readonly').objectStore(name).getAll();
-        req.onsuccess = () => resolve(req.result || []);
-        req.onerror = () => reject(req.error);
-      })
-  );
-}
-
-function getOne(name, id) {
-  return openDb().then(
-    (db) =>
-      new Promise((resolve, reject) => {
-        const req = db.transaction(name, 'readonly').objectStore(name).get(id);
-        req.onsuccess = () => resolve(req.result || null);
-        req.onerror = () => reject(req.error);
-      })
-  );
-}
-
-export const uid = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-
-/* ---------------- 卡片 ---------------- */
-
-export const CARD_KINDS = [
-  { kind: 'background', name: '背景设定', hint: '年代、地方、社会状况', pov: '史书视角' },
-  { kind: 'world', name: '世界观', hint: '规则、势力、禁忌', pov: '上帝视角' },
-  { kind: 'outline', name: '大纲', hint: '这部书大致要发生什么', pov: '导演视角' },
-  { kind: 'character', name: '角色', hint: '想要什么、怕什么、怎么说话', pov: '本人视角' },
-];
-
-export const KIND_BY_ID = Object.fromEntries(CARD_KINDS.map((k) => [k.kind, k]));
-
-export function newCard(kind = 'character', seed = {}) {
-  return Object.assign(
-    {
-      id: uid('c'),
-      kind,
-      title: kind === 'character' ? '新角色' : KIND_BY_ID[kind].name,
-      body: '',
-      rev: 1,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    },
-    seed
-  );
-}
-
-/* ---------------- 书 ---------------- */
-
-export function newStory(seed = {}) {
+export function newStory(title) {
   const now = Date.now();
-  return Object.assign(
-    {
-      id: uid('s'),
-      title: '未命名',
-      createdAt: now,
-      updatedAt: now,
-      styleId: '',
-      model: '',
-      cards: [
-        newCard('background', { title: '背景设定' }),
-        newCard('character', { title: '主角' }),
-      ],
-      timeline: [],
-      sessions: [],
-      chapters: [],
-      notes: '',
-    },
-    seed
-  );
+  return {
+    id: uid('s'),
+    title: title || '未命名',
+    createdAt: now,
+    updatedAt: now,
+    styleId: '',
+    cards: [newCard('world'), newCard('outline')],
+    sessions: [],
+    patches: [],
+    chapters: [],
+  };
 }
 
-export function newTimelineItem(seed = {}) {
-  return Object.assign(
-    {
-      id: uid('t'),
-      at: '',
-      title: '',
-      detail: '',
-      cardId: '',
-      sessionId: '',
-      status: 'pending',
-      order: 0,
-      stale: false,
-      orphan: false,
-    },
-    seed
-  );
+export function newSession(cardId, cardKind) {
+  return { id: uid('t'), cardId, cardKind, at: Date.now(), msgs: [], options: [], closed: false, patchId: '' };
 }
 
-export function newSession(cardId, seed = {}) {
-  return Object.assign(
-    {
-      id: uid('m'),
-      cardId,
-      title: '',
-      messages: [],
-      status: 'draft',
-      savedAt: Date.now(),
-      result: null,
-      baseRevs: {},
-      stale: false,
-      orphan: false,
-    },
-    seed
-  );
+export function newChapter() {
+  return { id: uid('h'), title: '', eventIds: [], narrativeId: '', body: '', status: 'draft', at: Date.now(), history: [] };
 }
 
-export function newChapter(seed = {}) {
-  return Object.assign(
-    {
-      id: uid('h'),
-      no: 0,
-      title: '',
-      body: '',
-      pov: { mode: 'third', who: [] },
-      span: { from: '', to: '' },
-      pickedIds: [],
-      sourceSessions: [],
-      baseRevs: {},
-      stale: false,
-      history: [],
-      status: 'draft',
-      createdAt: Date.now(),
-    },
-    seed
-  );
+/* ---------------- 查询辅助 ---------------- */
+
+export const cardsOf = (story, kind) => (story.cards || []).filter((c) => c.kind === kind);
+export const cardById = (story, id) => (story.cards || []).find((c) => c.id === id) || null;
+export const outlineOf = (story) => cardsOf(story, 'outline')[0] || null;
+export const worldOf = (story) => cardsOf(story, 'world')[0] || null;
+export const eventsOf = (story) => {
+  const o = outlineOf(story);
+  return o && Array.isArray(o.events) ? o.events : [];
+};
+export const sessOf = (story, id) => (story.sessions || []).find((s) => s.id === id) || null;
+
+export function cardText(card) {
+  if (!card) return '';
+  if (Array.isArray(card.sections)) {
+    return card.sections.map((s) => (s.text || '').trim() ? `${s.label}：${s.text.trim()}` : '').filter(Boolean).join('\n');
+  }
+  return String(card.text || '');
 }
 
-// 兼容旧数据
-function normalizeStory(s) {
-  if (!s) return s;
-  if (!Array.isArray(s.cards)) {
-    s.cards = [];
-    if (s.setup) {
-      if (s.setup.premise) s.cards.push(newCard('background', { title: '背景设定', body: s.setup.premise }));
-      if (s.setup.world) s.cards.push(newCard('world', { title: '世界观', body: s.setup.world }));
-      if (s.setup.characters) s.cards.push(newCard('character', { title: '人物', body: s.setup.characters }));
-      if (s.setup.outline) s.cards.push(newCard('outline', { title: '大纲', body: s.setup.outline }));
+export function addCard(story, kind, title) {
+  const def = CARD_KINDS[kind] || CARD_KINDS.setting;
+  if (def.single && cardsOf(story, kind).length >= 1) return cardsOf(story, kind)[0];
+  const card = newCard(kind, title);
+  story.cards.push(card);
+  story.updatedAt = Date.now();
+  return card;
+}
+
+export function removeCard(story, id) {
+  const card = cardById(story, id);
+  if (!card) return;
+  if (CARD_KINDS[card.kind] && CARD_KINDS[card.kind].single) return; // 单例卡不给删
+  story.cards = story.cards.filter((c) => c.id !== id);
+  story.sessions = (story.sessions || []).filter((s) => s.cardId !== id);
+  story.chapters = (story.chapters || []).filter((h) => h.narrativeId !== id);
+  story.updatedAt = Date.now();
+}
+
+/* ---------------- 旧数据兼容 ---------------- */
+
+function blankStory() {
+  return newStory('未命名');
+}
+
+export function normalizeStory(raw) {
+  if (!raw) return blankStory();
+  const story = Object.assign(blankStory(), raw);
+  story.cards = Array.isArray(raw.cards) ? raw.cards : [];
+  story.sessions = Array.isArray(raw.sessions) ? raw.sessions : [];
+  story.patches = Array.isArray(raw.patches) ? raw.patches : [];
+  story.chapters = Array.isArray(raw.chapters) ? raw.chapters : [];
+
+  const migrated = [];
+  let outlineEvents = [];
+  for (const c of story.cards) {
+    if (!c || typeof c !== 'object') continue;
+    let kind = c.kind === 'background' ? 'setting' : c.kind;
+    if (!CARD_KINDS[kind]) kind = 'setting';
+    if (Array.isArray(c.sections) && c.sections.length) {
+      migrated.push({ id: c.id || uid('c'), kind, title: c.title || CARD_KINDS[kind].name, sections: c.sections, at: c.at || Date.now(), events: Array.isArray(c.events) ? c.events : (kind === 'outline' ? [] : undefined) });
+    } else {
+      const text = c.detail || c.text || c.body || '';
+      migrated.push({
+        id: c.id || uid('c'),
+        kind,
+        title: c.title || CARD_KINDS[kind].name,
+        sections: CARD_KINDS[kind].sections.map((label, i) => ({ label, text: i === 0 ? String(text) : '' })),
+        at: c.at || Date.now(),
+        events: kind === 'outline' ? (Array.isArray(c.events) ? c.events : []) : undefined,
+      });
     }
   }
-  if (!Array.isArray(s.timeline)) s.timeline = [];
-  if (!Array.isArray(s.sessions)) s.sessions = [];
-  if (!Array.isArray(s.chapters)) s.chapters = [];
-  if (typeof s.notes !== 'string') s.notes = '';
-  // 联动字段回填（老数据没有这些）
-  s.cards.forEach((c) => {
-    if (!c.rev) c.rev = 1;
+
+  // 旧时间轴里的条目并进大纲的事件链
+  if (Array.isArray(raw.timeline)) {
+    outlineEvents = raw.timeline
+      .filter((it) => it && (it.title || it.summary || it.text))
+      .map((it) => ({ id: it.id || uid('e'), title: it.title || '', when: it.when || '', summary: it.summary || it.text || '', done: !!it.done }));
+  }
+
+  story.cards = migrated;
+
+  // 单例卡必须存在
+  for (const kind of ['world', 'outline']) {
+    if (!cardsOf(story, kind).length) story.cards.unshift(newCard(kind));
+  }
+  const ol = outlineOf(story);
+  if (!Array.isArray(ol.events)) ol.events = [];
+  if (outlineEvents.length) ol.events = ol.events.concat(outlineEvents);
+
+  story.sessions = story.sessions.map((s) => ({
+    id: s.id || uid('t'),
+    cardId: s.cardId || '',
+    cardKind: s.cardKind || (cardById(story, s.cardId) || {}).kind || 'setting',
+    at: s.at || Date.now(),
+    msgs: Array.isArray(s.msgs) ? s.msgs : [],
+    options: Array.isArray(s.options) ? s.options : [],
+    closed: !!s.closed,
+    patchId: s.patchId || '',
+  }));
+
+  story.chapters = story.chapters.map((h) => ({
+    id: h.id || uid('h'),
+    title: h.title || '',
+    eventIds: Array.isArray(h.eventIds) ? h.eventIds : (Array.isArray(h.picks) ? h.picks : []),
+    narrativeId: h.narrativeId || '',
+    body: h.body || '',
+    status: h.status || 'draft',
+    at: h.at || Date.now(),
+    history: Array.isArray(h.history) ? h.history : [],
+  }));
+
+  return story;
+}
+
+/* ---------------- IndexedDB ---------------- */
+
+let dbp = null;
+function db() {
+  if (dbp) return dbp;
+  dbp = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const d = req.result;
+      if (!d.objectStoreNames.contains('stories')) d.createObjectStore('stories', { keyPath: 'id' });
+      if (!d.objectStoreNames.contains('styles')) d.createObjectStore('styles', { keyPath: 'id' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
   });
-  s.timeline.forEach((t) => {
-    if (typeof t.stale !== 'boolean') t.stale = false;
-    if (typeof t.orphan !== 'boolean') t.orphan = !!t.cardId && !s.cards.some((c) => c.id === t.cardId);
+  return dbp;
+}
+
+function tx(store, mode) {
+  return db().then((d) => d.transaction(store, mode).objectStore(store));
+}
+
+function wrap(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
   });
-  s.sessions.forEach((m) => {
-    if (!m.baseRevs) m.baseRevs = {};
-    if (typeof m.stale !== 'boolean') m.stale = false;
-    if (typeof m.orphan !== 'boolean') m.orphan = !s.cards.some((c) => c.id === m.cardId);
-  });
-  s.chapters.forEach((h) => {
-    if (!Array.isArray(h.sourceSessions)) h.sourceSessions = [];
-    if (!Array.isArray(h.history)) h.history = [];
-    if (!h.baseRevs) h.baseRevs = {};
-    if (typeof h.stale !== 'boolean') h.stale = false;
-  });
-  return s;
+}
+
+export async function listStories() {
+  const s = await tx('stories', 'readonly');
+  const all = await wrap(s.getAll());
+  return (all || []).map(normalizeStory).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+export async function getStory(id) {
+  const s = await tx('stories', 'readonly');
+  const raw = await wrap(s.get(id));
+  return raw ? normalizeStory(raw) : null;
 }
 
 export async function putStory(story) {
   story.updatedAt = Date.now();
-  await tx(S_STORY, 'readwrite', (s) => s.put(story));
+  const s = await tx('stories', 'readwrite');
+  await wrap(s.put(story));
   return story;
 }
 
-export function getStory(id) {
-  return getOne(S_STORY, id).then(normalizeStory);
+export async function deleteStory(id) {
+  const s = await tx('stories', 'readwrite');
+  await wrap(s.delete(id));
 }
 
-export function listStories() {
-  return getAll(S_STORY).then((arr) => arr.map(normalizeStory).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+export async function listStyles() {
+  const s = await tx('styles', 'readonly');
+  const all = await wrap(s.getAll());
+  return (all || []).sort((a, b) => (b.at || 0) - (a.at || 0));
 }
 
-export function deleteStory(id) {
-  return tx(S_STORY, 'readwrite', (s) => s.delete(id));
-}
-
-/* ---------------- 文风 ---------------- */
-
-export function newStyle(seed = {}) {
-  return Object.assign(
-    {
-      id: uid('w'),
-      name: '未命名文风',
-      createdAt: Date.now(),
-      axes: {},
-      notes: [],
-      rounds: [],
-      chat: [],
-      text: '',
-    },
-    seed
-  );
+export async function getStyle(id) {
+  const s = await tx('styles', 'readonly');
+  return (await wrap(s.get(id))) || null;
 }
 
 export async function putStyle(style) {
-  await tx(S_STYLE, 'readwrite', (s) => s.put(style));
+  const s = await tx('styles', 'readwrite');
+  await wrap(s.put(style));
   return style;
 }
 
-export const getStyle = (id) => getOne(S_STYLE, id);
-export const listStyles = () => getAll(S_STYLE).then((a) => a.sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0)));
-export const deleteStyle = (id) => tx(S_STYLE, 'readwrite', (s) => s.delete(id));
+export async function deleteStyle(id) {
+  const s = await tx('styles', 'readwrite');
+  await wrap(s.delete(id));
+}
+
+export function newStyle(extra) {
+  return Object.assign({ id: uid('w'), name: '我的文风', rules: '', at: Date.now() }, extra || {});
+}
 
 /* ---------------- 设置 ---------------- */
+
+const SET_KEY = 'sf_settings_v1';
+const CUR_KEY = 'sf_current_v1';
 
 const DEFAULT_SETTINGS = {
   baseUrl: 'https://api.deepseek.com/v1',
   apiKey: '',
   model: 'deepseek-chat',
   models: [],
-  temperature: 1.0,
-  theme: 'aurora',
   effort: 'off',
+  theme: 'aurora',
 };
 
 export function loadSettings() {
   try {
-    const raw = localStorage.getItem(LS_SETTINGS);
-    return { ...DEFAULT_SETTINGS, ...(raw ? JSON.parse(raw) : {}) };
-  } catch {
-    return { ...DEFAULT_SETTINGS };
+    const raw = JSON.parse(localStorage.getItem(SET_KEY) || '{}');
+    return Object.assign({}, DEFAULT_SETTINGS, raw);
+  } catch (e) {
+    return Object.assign({}, DEFAULT_SETTINGS);
   }
 }
 
-export function saveSettings(s) {
-  localStorage.setItem(LS_SETTINGS, JSON.stringify(s));
+export function saveSettings(patch) {
+  const next = Object.assign(loadSettings(), patch || {});
+  localStorage.setItem(SET_KEY, JSON.stringify(next));
+  return next;
 }
 
-export const loadCurrentId = () => localStorage.getItem(LS_CURRENT) || '';
-export const saveCurrentId = (id) => localStorage.setItem(LS_CURRENT, id || '');
-
-/* ---------------- 演示书 ---------------- */
-
-export function demoStory() {
-  const st = newStory({ title: '演示 · 最后一班地铁', model: '' });
-  st.cards = [
-    newCard('background', {
-      title: '背景设定',
-      body: '这座城市，二〇二六年冬。地铁三号线末班车 23:47 发车，终点站只有两个出口，B 口常年不开。\n姐姐周意失踪的第四十一天。警方下的结论是自行离开，卷宗里最后一句话是「未见外力介入」。\n我在夜班护士这个行当里干了七年，两个月前辞了。',
-    }),
-    newCard('world', {
-      title: '世界观',
-      body: '没有超自然，一切都能用人事解释。\n只有一条当地习惯：末班车上没人看手机。乘务员说那是因为车过江隧道时会断网，久了就成了规矩。\n谁在末班车上掏出手机，会被全车厢的人看。',
-    }),
-    newCard('outline', {
-      title: '大纲',
-      body: '第一场：末班车，我上车，看见林医生坐在第三节。\n第二场：他说三件事，每件都缺一半。\n第三场：车到终点，站台上有人等我。\n四场之内演完。这本不出现任何超自然解释，所有线索必须能落回人事。',
-    }),
-    newCard('character', {
-      title: '周叙（主角）',
-      body: '三十四岁。周意的弟弟。辞职以后靠接零活过。\n想要：拿到姐姐失踪那晚的监控。\n怕：被人当成疯子。\n说话：短，不解释，不求助。别人一问，他反问你一句。\n他不会当场崩溃，他会去查。',
-    }),
-    newCard('character', {
-      title: '林医生',
-      body: '五十二岁，周意科室的主任。\n明面上想要：把这件事体面地翻过去。\n不肯说：那天晚上他到底在不在车上。\n底线：不能丢现在这个位置。\n说话：客气，回避，每句话留半句。不会直接撒谎，只会绕。',
-    }),
-  ];
-  st.timeline = [
-    newTimelineItem({
-      title: '末班车上，林医生说他「还记得你姐」',
-      at: '23:47',
-      detail: '他没有解释为什么会在这一班车上，说完就转过去看窗外。',
-      status: 'pending',
-      order: 0,
-    }),
-  ];
-  return st;
-}
+export const loadCurrentId = () => localStorage.getItem(CUR_KEY) || '';
+export const saveCurrentId = (id) => localStorage.setItem(CUR_KEY, id || '');
