@@ -1,218 +1,304 @@
-// 提示词：三件事——演绎、抽事件、写成一章。
-import { brief } from './style-engine.js';
-import { KIND_BY_ID } from './store.js';
-
-export const POV_MODES = [
-  { id: 'third', name: '第三人称', desc: '像小说，站在外面写' },
-  { id: 'first', name: '第一人称', desc: '以某个角色的「我」来写' },
-  { id: 'omni', name: '全知', desc: '多个人的心思都能写' },
-];
-
-/* ---------------- 公共 ---------------- */
-
-export function settingsBlock(story) {
-  const cards = story.cards || [];
-  if (!cards.length) return '【设定】还没有任何设定，只能靠常识推演，遇到关键处先停下来问。';
-  const parts = cards.map((c) => {
-    const k = KIND_BY_ID[c.kind] || { name: '设定' };
-    return `【${k.name}·${c.title}】\n${(c.body || '（空）').trim()}`;
-  });
-  return '【已确定的设定】\n' + parts.join('\n\n');
-}
-
-export function cardPovNote(card) {
-  if (card.kind === 'character') return '你是这个人，用第一人称「我」，只写这个人的所见、所想、所做。';
-  if (card.kind === 'outline') return '你是这部书的导演，负责判断这一幕该不该发生、和大纲是否一致。';
-  return '你在写史书：以上帝视角记录大事件、势力变化和趋势，不进入某个人的内心。';
-}
-
-/* ---------------- 演绎 ---------------- */
-
-/* ---------------- 演绎的选项 ---------------- */
+// 提示词：五种卡各一套演绎，加收束、成章、生成设定。
+import { CARD_KINDS, cardsOf, cardText, eventsOf, worldOf, outlineOf } from './store.js';
 
 export const OUT_MARK = '<<<';
 
-/**
- * 把一轮回复拆成「正文」和「三条路」。
- * 流式输出时标记可能只写了一半，这里会把它一起截掉，避免闪烁。
- */
 export function splitOut(raw) {
-  const s = String(raw || '');
-  const i = s.indexOf(OUT_MARK);
+  const text = String(raw || '');
+  const i = text.indexOf(OUT_MARK);
   if (i < 0) {
-    const tail = s.match(/<{1,2}$/);
-    return { body: tail ? s.slice(0, s.length - tail[0].length) : s, options: [] };
+    return { body: text.replace(/<<\s*$/, '').trim(), options: [] };
   }
-  const options = s
-    .slice(i + OUT_MARK.length)
+  const body = text.slice(0, i).trim();
+  const rest = text.slice(i + OUT_MARK.length);
+  const options = rest
     .split('\n')
-    .map((x) =>
-      x
-        .trim()
-        .replace(/^[-*·•]\s*/, '')
-        .replace(/^\d+[.、)）]\s*/, '')
-        .trim()
-    )
-    .filter((x) => x.length >= 2)
+    .map((s) => s.trim().replace(/^[-–—*·•‣∙0-9.、)）\s]+/, '').trim())
+    .filter((s) => s.length >= 2)
     .slice(0, 3);
-  return { body: s.slice(0, i), options };
+  return { body, options };
 }
 
-export function sessionSystem(story, card, style) {
-  const k = KIND_BY_ID[card.kind] || { name: '设定' };
-  const others = (story.cards || []).filter((c) => c.kind === 'character' && c.id !== card.id);
+/* ---------------- 底稿 ---------------- */
 
-  return [
-    `你在和这部书的作者一起演绎《${story.title}》。`,
-    '',
-    settingsBlock(story),
-    '',
-    `【这一场演的是·${k.name}：${card.title}】`,
-    (card.body || '（这张卡还是空的，先问作者想要什么。）').trim(),
-    '',
-    '【视角】',
-    cardPovNote(card),
-    '',
-    '【怎么演】',
-    '- 你负责世界和别的人怎么反应，作者负责他自己那一下：说什么、做什么、退还是进。不要替作者做决定，不要写他的台词。',
-    '- 在场的人不许配合。他们有自己的目的，会拒绝、会敷衍、会撒谎、会绕开。要让作者付出代价才能推进。',
-    '- 写具体的过程：谁说了什么话，做了什么动作，结果是什么。写清楚，但不要文学加工，不要比喻，不要升华，不要替他总结意义。',
-    '- 每次回应 120–250 字，停在作者需要接话的地方。一章要演十来轮，不要一次演完。',
-    '- 作者的设定不许自己改。发现设定有冲突或不够用，就停下来问他一句。',
-    others.length
-      ? '- 其他角色：' + others.map((c) => c.title).join('、') + '。他们对作者的态度要按各自设定来，不要一见面就掏心掏肺。'
-      : '',
-    '',
-    '【第一步】',
-    '先不要开始演。先用四五句话复述你对这张卡的理解：这个人（或这个世界）是什么状况、想要什么、说话什么调子、此刻处在什么地方。',
-    '然后问一句：「是这样吗？要不要改什么？」',
-    '作者确认之后，你再演第一轮。',
-    '',
-    '【每轮结尾：给作者三条路】',
-    '正文写完后，另起一行，只写三个小于号：<<<',
-    '然后写三行，每行是作者接下来可以说的或做的一件事，12–24 字，用「我」开头，不要编号，不要解释，不要加引号。',
-    '三行必须是三条不同的路：一条往前推（把事闹大）、一条往后缩（先稳住）、一条是现场没人想到的那种。',
-    '不要让三条都朝着对作者有利的方向。作者应该有的选，而不是有好的选。',
-  ]
+function styleBlock(brief) {
+  const b = String(brief || '').trim();
+  if (!b) return '';
+  return `\n【叙述的写法】\n${b}\n（这是作者自己的写法，叙述必须照着来；它高于下面任何一条关于「怎么写」的建议。）`;
+}
+
+function worldBlock(story) {
+  const w = worldOf(story);
+  const t = cardText(w);
+  return t ? `【世界观】\n${t}` : '【世界观】\n（还没写。）';
+}
+
+function outlineBlock(story) {
+  const o = outlineOf(story);
+  const t = cardText(o);
+  const evs = eventsOf(story);
+  const evText = evs.length
+    ? evs.map((e, i) => `${i + 1}. ${e.when ? e.when + '｜' : ''}${e.title || e.summary || ''}`).join('\n')
+    : '（还没有事件。）';
+  return `【大纲】\n${t || '（还没写。）'}\n\n【已有的事件链】\n${evText}`;
+}
+
+function othersBlock(story, exceptId) {
+  const list = (story.cards || []).filter((c) => c.id !== exceptId && (c.kind === 'setting' || c.kind === 'character'));
+  if (!list.length) return '';
+  const body = list
+    .map((c) => {
+      const t = cardText(c);
+      return t ? `· ${CARD_KINDS[c.kind].name}《${c.title}》\n${t}` : '';
+    })
     .filter(Boolean)
-    .join('\n');
+    .join('\n\n');
+  return body ? `\n【其它已经定下的东西】\n${body}\n` : '';
 }
 
-export function sessionUser(messages, ctx) {
-  const last = messages[messages.length - 1];
-  return last ? last.content : '开始';
+/* ---------------- 五种演绎 ---------------- */
+
+const BASE = `你在为一部小说做推演。你不是代笔，你是这个世界的推演引擎：你负责让事情真的往前发生，作者负责决定往哪走。
+
+三条铁律：
+一，不给作者台阶。他做什么，世界就有相应的反弹；不要因为他想做就让事情顺利。
+二，不解释意义。不写「这意味着」「这说明了」，不总结，不升华。
+三，具体。地名、时间、价钱、人数、谁说了哪句话。抽象的词一律换成看得见的东西。`;
+
+const HOW = {
+  world: `【这一场演的是世界本身】
+不出现主角，不写「我」。用推演的口气：某个决定做下去之后，这个地区会怎样，哪一批人先受损，三个月后表面看起来是什么样子。
+
+每一拍落地一个可以被后人记载的事实：一条法令、一次涨价、一场械斗、一批人离城、一个新出现的行当。不写心情，写后果。
+
+作者在这一场里做的是：注入压力、选择走向、决定哪条支线值得长出来。`,
+
+  setting: `【这一场演的是这一条设定】
+把它推到底：什么时候它不灵、什么条件下它反噬、谁靠它活着、谁被它排除在外。
+
+不出现主角。用具体的例子演，不要复述设定本身——设定卡上已经写过的，不要再说一遍。你要演出它还没有被写出来的那一面。`,
+
+  character: `【这一场演的是这个人】
+用第一人称「我」，就是这个角色。他不知道自己在一部小说里，他有自己想说和不想说的事。
+
+他的「不肯说的」那一条，是这一场里最不该被轻易说出口的东西。你可以让他绕开、让他用别的话代替、让他忽然生气——但不要让他直接坦白。
+
+作者在这一场里：以他的身份做决定，或者导着他走。`,
+
+  outline: `【这一场演的是剧情怎么走】
+作者在这里做的是决策，不是表演。一次只摆一个岔路口：现在走到这里，往前有几种走法，各自的代价是什么。
+
+写成具体场面，不要写成方案列表——让人看见它发生，而不是读到它被安排。每一拍结束时，这一拍本身应该能成为大纲里的一个事件（有时间、有地点、有事、有谁付出代价）。`,
+
+  narrative: `【这一场演的是「这么讲会是什么样」】
+不推进剧情。拿同一段材料，用这套叙事形式写出来，让作者看见效果。
+
+每次只换一个变量：视角拉远一点、时态换成回忆、声音加一层、体例变成书信。然后写一小段示范。
+
+写完之后，另起一行，用一句话说清这套讲法的代价——读者因此会知道什么、不会知道什么。`,
+};
+
+export function cardSystem(story, card, styleBrief) {
+  const def = CARD_KINDS[card.kind] || CARD_KINDS.setting;
+  return `${BASE}
+
+【这本书】《${story.title}》
+
+${worldBlock(story)}
+
+${outlineBlock(story)}
+${othersBlock(story, card.id)}
+【这一张卡】${def.name}《${card.title}》
+${cardText(card) || '（还是空的。）'}
+
+${HOW[card.kind] || HOW.setting}${styleBlock(styleBrief)}
+
+【输出格式】
+先写正文。正文写完，另起一行只写 ${OUT_MARK}
+然后在后面写三行：每行是作者接下来可以做的选择，8–18 字，不要编号，不要解释。`;
 }
 
-/* ---------------- 抽事件 ---------------- */
+export function turnMessages(story, card, session, styleBrief) {
+  const msgs = [{ role: 'system', content: cardSystem(story, card, styleBrief) }];
+  for (const m of session.msgs || []) {
+    if (m.role === 'me') msgs.push({ role: 'user', content: m.text });
+    else msgs.push({ role: 'assistant', content: m.text });
+  }
+  if (!session.msgs || !session.msgs.length) {
+    msgs.push({ role: 'user', content: '开始。直接写第一拍，不要写「好的」，不要写标题。' });
+  }
+  return msgs;
+}
 
-export function timelineMessages(story, session, card) {
-  const lines = session.messages
-    .map((m) => (m.role === 'user' ? '作者：' : '演绎：') + m.content)
-    .join('\n');
+/* ---------------- 收束 ---------------- */
+
+export function collectMessages(story, card, session) {
+  const labels = card.sections.map((s) => s.label);
+  const transcript = (session.msgs || [])
+    .map((m) => (m.role === 'me' ? `作者：${m.text}` : `推演：${m.text}`))
+    .join('\n\n');
+
+  const head = `下面是一场演绎的全部记录。现在要把它收进设定卡《${card.title}》。
+
+只写这一场真正改变了的部分。没被这场演绎碰到的区块，原样返回它现在的内容，不要改写、不要润色。
+
+输出格式：每个小标题一行，以 ## 开头，标题必须和下面给的一字不差；标题下面直接写这一块的完整新内容（整块替换，不是追加）。不要写解释。
+
+${labels.map((l) => `## ${l}`).join('\n')}`;
+
+  if (card.kind === 'outline') {
+    return [
+      { role: 'system', content: '你把一场演绎整理回小说的大纲。只做整理，不新增演绎里没有发生的事。' },
+      {
+        role: 'user',
+        content: `${head}\n\n另外在这之后，用 ## 事件 开头，一行一个新增或改变的事件，格式：\n- 时间｜事件一句话｜谁付出什么代价\n没有新事件就写 ## 事件 然后下一行写「无」。\n\n【这一场演绎】\n${transcript}\n\n【这张卡现在的内容】\n${cardText(card) || '（空）'}`,
+      },
+    ];
+  }
 
   return [
-    {
-      role: 'system',
-      content: [
-        '你在把一次演绎整理成书的事实底账。只记录发生了什么，不记录谁的心情。',
-        settingsBlock(story),
-        '',
-        '输出 JSON，不要别的话：',
-        '{"summary":"这一章发生了什么，80–120字",',
-        ' "events":[{"at":"时间标识，如 第一天 傍晚","title":"一行小标题","detail":"发生了什么，谁做了什么，结果如何，40–80字"}],',
-        ' "suggestions":[{"cardId":"要改的卡片id","action":"append 或 replace","title":"卡片标题","body":"改后的完整内容"}]}',
-        '',
-        '规则：',
-        '- events 按发生顺序排，3–8 条；只写演绎里真实发生过的，不要补。',
-        '- at 用故事内的时间，作者没给就按前后顺序推一个合理的。',
-        '- suggestions 只在演绎暴露出设定不足或矛盾时才给，可以给空数组。',
-        `- 卡片id 只能用这些：${(story.cards || []).map((c) => `${c.id}=${c.title}`).join('，')}`,
-      ].join('\n'),
-    },
+    { role: 'system', content: '你把一场演绎整理回设定卡。只做整理，不新增演绎里没有发生的事。' },
     {
       role: 'user',
-      content: `这场演的是【${KIND_BY_ID[card.kind] ? KIND_BY_ID[card.kind].name : ''}·${card.title}】。\n\n${lines}`,
+      content: `${head}\n\n【这一场演绎】\n${transcript}\n\n【这张卡现在的内容】\n${cardText(card) || '（空）'}`,
     },
   ];
 }
 
-/* ---------------- 写成一章 ---------------- */
+export function parseCollect(raw, card) {
+  const text = String(raw || '').replace(/\r/g, '');
+  const lines = text.split('\n');
+  const sections = [];
+  let cur = null;
+  let inEvents = false;
 
-export function chapterMessages(story, items, pov, style, span, extra) {
-  const mode = pov.mode || 'third';
-  const who = (pov.who || []).map((id) => (story.cards || []).find((c) => c.id === id)).filter(Boolean);
-  const ex = extra || {};
+  for (const line of lines) {
+    const m = /^\s*##\s*(.+?)\s*$/.exec(line);
+    if (m) {
+      const label = m[1].trim();
+      if (label === '事件') {
+        inEvents = true;
+        cur = null;
+        continue;
+      }
+      inEvents = false;
+      const hit = card.sections.find((s) => s.label === label);
+      if (hit) {
+        cur = { label: hit.label, text: '' };
+        sections.push(cur);
+      } else {
+        cur = null;
+      }
+      continue;
+    }
+    if (inEvents) continue;
+    if (cur) cur.text += line + '\n';
+  }
 
-  const povLine =
-    mode === 'first' && who.length
-      ? `用第一人称写，叙述者就是「${who[0].title}」，只写他知道的。`
-      : mode === 'omni'
-      ? '用全知视角写，几个人的心思都可以写，但不要跳来跳去。'
-      : '用第三人称写，站在外面看，不进入任何人的内心。';
+  const events = [];
+  const evPart = text.split(/^\s*##\s*事件\s*$/m)[1];
+  if (evPart) {
+    for (const line of evPart.split('\n')) {
+      const s = line.trim();
+      if (!s || s === '无') continue;
+      const body = s.replace(/^[-–—*·•]\s*/, '').trim();
+      if (!body) continue;
+      const parts = body.split(/[｜|]/).map((x) => x.trim());
+      events.push({ when: parts[0] || '', title: parts[1] || parts[0] || '', summary: parts[1] || '', cost: parts[2] || '' });
+    }
+  }
 
-  const events = items.map((t, i) => `${i + 1}. ${t.at ? t.at + '，' : ''}${t.title}：${t.detail}`).join('\n');
+  return {
+    sections: sections.map((s) => ({ label: s.label, text: s.text.trim() })),
+    events,
+  };
+}
 
-  const styleText = brief(style);
+/* ---------------- 成章 ---------------- */
 
-  const transcripts = (ex.transcripts || []).length
-    ? [
-        '',
-        '【这场戏的原始演绎】',
-        '下面是作者当时实际演出来的内容，是这一章最可靠的材料。',
-        '取里面的具体动作、语气、物件和原话；把对话记录转化成叙述，不要把「作者：」「演绎：」这种格式写进小说。',
-        (ex.transcripts || []).map((t) => `—— ${t.title} ——\n${t.text}`).join('\n\n'),
-      ].join('\n')
-    : '';
+export function chapterMessages(story, picked, narrativeCard, styleBrief) {
+  const evText = picked.length
+    ? picked
+        .map((e, i) => `${i + 1}. ${e.when ? e.when + '｜' : ''}${e.title}${e.summary && e.summary !== e.title ? '：' + e.summary : ''}${e.cost ? '（代价：' + e.cost + '）' : ''}`)
+        .join('\n')
+    : '（这一段里没有事件，靠上下文推。）';
 
-  const prev = ex.prevTail
-    ? ['', '【上一章最后一段】', ex.prevTail, '接着这个往下写，不要重复上一章已经交代过的信息。'].join('\n')
-    : '';
+  const cast = cardsOf(story, 'character')
+    .map((c) => {
+      const t = cardText(c);
+      return t ? `《${c.title}》\n${t}` : '';
+    })
+    .filter(Boolean)
+    .join('\n\n');
+
+  const narr = narrativeCard ? cardText(narrativeCard) : '';
 
   return [
     {
       role: 'system',
-      content: [
-        `你在写小说《${story.title}》的一章。`,
-        '',
-        settingsBlock(story),
-        '',
-        styleText ? '【写法】\n' + styleText : '【写法】写具体的动作、对话、物件和时间；不写「她很累」，写「她眼底有一层青」；不用比喻装饰；不替读者总结意义；结尾停在动作上。',
-        '',
-        '【写这一章】',
-        povLine,
-        '- 下面的事件是事实骨架，不许改；原始演绎里的细节可以取用，但要写成小说，不是记录。',
-        '- 一整章，1200–2500 字。分段，不要小标题，不要解说，不要写「本章完」。',
-        '- 开头直接进入场面，不要交代背景。',
-        prev,
-      ]
-        .filter(Boolean)
-        .join('\n'),
+      content: `${BASE}
+
+【这本书】《${story.title}》
+
+${worldBlock(story)}${styleBlock(styleBrief)}
+
+【怎么写这一章】
+- 骨架是下面这几件事。它们必须都出现在正文里，但不要按顺序报菜名——按它们之间的因果排。
+- 世界观决定这些事为什么只能这样发生；凡是世界观里没有的规则，不要发明。
+- 角色的动机和说话方式决定他做什么、说什么；不要让他做设定里不会做的事。
+- ${narr ? '叙事形式已经给定，严格遵守：' + narr : '叙事形式由你定，但全书要一致。'}
+- 直接出小说正文。不要标题，不要章节序号，不要解释，不要写「本章」。`,
     },
     {
       role: 'user',
-      content: `这一章覆盖：${span && span.from ? span.from : '未标'} 到 ${span && span.to ? span.to : '未标'}\n\n事件：\n${events}${transcripts}\n\n现在写这一章。`,
+      content: `【这一段的事件】\n${evText}\n\n【在场的人】\n${cast || '（还没有角色卡。）'}\n\n写这一章。`,
     },
   ];
 }
 
-// 把一场演绎压成纯文本，供写章节时取用；超长时保留结尾（结尾通常是这一场真正发生的事）
-export function sessionTranscript(session, cardTitle, budget = 2600) {
-  const lines = (session.messages || [])
-    .map((m) => (m.role === 'user' ? '作者：' : '演绎：') + String(m.content || '').trim())
-    .filter((x) => x.length > 2);
-  let text = lines.join('\n');
-  if (text.length > budget) text = '……（前略）\n' + text.slice(text.length - budget);
-  return { title: session.title || cardTitle || '一场演绎', text };
+/* ---------------- 生成新设定 ---------------- */
+
+export function suggestMessages(story) {
+  const all = (story.cards || [])
+    .filter((c) => c.kind !== 'outline')
+    .map((c) => ({ c, t: cardText(c) }))
+    .filter((x) => x.t);
+  const body = all.map((x) => `【${(CARD_KINDS[x.c.kind] || {}).name || '设定'}《${x.c.title}》】\n${x.t}`).join('\n\n');
+
+  return [
+    {
+      role: 'system',
+      content: `你读一遍这部小说现有的设定，找出还没被写、但一旦写清就会让故事更有张力的东西。
+
+规则：
+- 只提还没有的。已经写过的不要重提。
+- 每条都要具体到能直接用：有人名、有机制、有代价。
+- kind 只能是 setting 或 character。
+- 最多 4 条。少于 2 条也行，宁缺毋滥。
+
+输出格式（严格照做，每条之间空一行）：
+### kind|标题
+内容
+
+不要写解释，不要写前言后语。`,
+    },
+    { role: 'user', content: `【这部小说现在有的东西】\n${body || '（几乎是空的。）'}\n\n给出新设定。` },
+  ];
 }
 
-// 取上一章结尾，保持接续
-export function tailOf(text, n = 320) {
-  const s = String(text || '').replace(/\s+/g, ' ').trim();
-  return s.length > n ? '…' + s.slice(s.length - n) : s;
-}
-
-/* ---------------- 杂项 ---------------- */
-
-export function chapterWordCount(text) {
-  return String(text || '').replace(/\s+/g, '').length;
+export function parseSuggest(raw) {
+  const text = String(raw || '').replace(/\r/g, '');
+  const out = [];
+  const blocks = text.split(/^\s*###\s*/m).slice(1);
+  for (const b of blocks) {
+    const nl = b.indexOf('\n');
+    const head = (nl < 0 ? b : b.slice(0, nl)).trim();
+    const body = (nl < 0 ? '' : b.slice(nl + 1)).trim();
+    const m = /^(\w+)\s*[|｜]\s*(.+)$/.exec(head);
+    const kind = m ? m[1].trim() : 'setting';
+    const title = (m ? m[2] : head).trim();
+    if (!title || !body) continue;
+    out.push({ kind: kind === 'character' ? 'character' : 'setting', title, text: body });
+  }
+  return out;
 }
