@@ -1,24 +1,28 @@
-import { chat, streamChat, listModels, pickModel, testConnection } from './api.js';
+// 我的故事 — 打开一本书就是正文
 import * as S_ from './store.js';
-import * as P from './prompt.js';
-import * as E from './style-engine.js';
+import * as C from './corpus.js';
+import * as G from './guard.js';
+import * as E from './entry.js';
+import * as F from './style-engine.js';
+import { chat, streamChat, listModels, pickModel, testConnection } from './api.js';
+
+/* ---------------- 基础设施 ---------------- */
 
 const $app = document.getElementById('app');
 
-/* ---------------- 出错看得见 ---------------- */
 window.__sfError = (where, err) => {
-  const msg = `${where}：${(err && (err.stack || err.message)) || err}`;
-  window.__sfLastError = msg;
-  try {
-    const box = document.getElementById('fatal');
-    if (box) {
-      box.textContent = msg;
-      box.classList.add('on');
-    }
-  } catch (e) {}
+  const msg = (err && (err.stack || err.message)) || String(err);
+  window.__sfLastError = where + '：' + msg;
+  const el = document.getElementById('fatal');
+  if (el) el.textContent = where + '：' + msg;
+  console.error(where, err);
 };
-window.addEventListener('error', (e) => window.__sfError('脚本出错', e.error || e.message));
-window.addEventListener('unhandledrejection', (e) => window.__sfError('异步出错', e.reason));
+window.addEventListener('error', (e) => window.__sfError('页面出错', e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => window.__sfError('未处理的异步错误', e.reason));
+
+const esc = (s) =>
+  String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const chars = (s) => String(s || '').replace(/\s/g, '').length;
 
 const S = {
   ready: false,
@@ -29,780 +33,811 @@ const S = {
   style: null,
   view: 'shelf',
   stack: [],
-  cardId: '',
-  sessionId: '',
-  chapterId: '',
-  patchId: '',
   input: '',
   busy: false,
   err: '',
   live: '',
-  toast: '',
-  sheet: '',
-  models: [],
-  testing: false,
-  testMsg: '',
+  drawer: '',
+  menu: '',
+  entry: null,
   forge: null,
-  picks: {},
-  suggest: null,
+  settings_msg: '',
+  testMsg: '',
+  models: [],
+  chapter: '',
 };
-
-const esc = (s) =>
-  String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const chars = (s) => String(s || '').replace(/\s+/g, '').length;
-const fmt = (n) => (n >= 10000 ? (n / 10000).toFixed(1) + ' 万' : String(n || 0));
-
-const EFFORTS = [
-  { id: 'off', name: '关', desc: '不发这个参数，最快' },
-  { id: 'low', name: '低', desc: '想一点点' },
-  { id: 'medium', name: '中', desc: '多想一想' },
-  { id: 'high', name: '高', desc: '想很久，最慢' },
-];
-
-const THEMES = [
-  { id: 'aurora', name: '粉蓝', desc: '默认。浅色底，粉紫到蓝的渐变。', sw: 'linear-gradient(135deg,#ff375f,#c34dff,#0a84ff)' },
-  { id: 'ink', name: '墨蓝', desc: '深色。夜里看，眼睛不累。', sw: 'linear-gradient(135deg,#1b2740,#8ab4f8)' },
-  { id: 'plain', name: '素白', desc: '极简。只有黑白灰，像一页纸。', sw: 'linear-gradient(135deg,#ffffff,#1d1d1f)' },
-  { id: 'mint', name: '薄荷', desc: '浅绿。安静，适合长时间写。', sw: 'linear-gradient(135deg,#dff4ef,#12a594)' },
-  { id: 'sakura', name: '樱', desc: '浅粉。暖一点，不刺眼。', sw: 'linear-gradient(135deg,#ffe3ec,#e0447c)' },
-  { id: 'midnight', name: '夜读', desc: '深紫。最暗的一套。', sw: 'linear-gradient(135deg,#1e1b3a,#a78bfa)' },
-];
-
-function applyTheme(id) {
-  const t = THEMES.some((x) => x.id === id) ? id : 'aurora';
-  try {
-    document.documentElement.setAttribute('data-theme', t);
-  } catch (e) {
-    /* 非浏览器环境（自检脚本）忽略 */
-  }
-}
 
 function toast(msg) {
-  S.toast = msg;
-  render();
-  setTimeout(() => {
-    if (S.toast === msg) {
-      S.toast = '';
-      render();
-    }
-  }, 2400);
+  const el = document.getElementById('toast');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add('on');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.remove('on'), 1800);
 }
-
-const push = (view) => {
-  S.stack.push(S.view);
-  S.view = view;
-  render();
-};
-const back = () => {
-  S.view = S.stack.pop() || 'shelf';
-  render();
-};
-const go = (view) => {
-  S.view = view;
-  render();
-};
-
-/* ---------------- 启动 ---------------- */
 
 async function boot() {
   S.settings = S_.loadSettings();
-  applyTheme(S.settings.theme);
-  S.models = (S.settings.models || []).slice();
-  S.stories = await S_.listStories();
-  S.styles = await S_.listStyles();
+  S.styles = await S_.listStyles().catch(() => []);
+  S.stories = await S_.listStories().catch(() => []);
+  const id = S_.loadCurrentId();
+  if (id) {
+    const st = await S_.getStory(id).catch(() => null);
+    if (st) {
+      S.story = S_.normalizeStory(st);
+      S.style = S.styles.find((x) => x.id === S.story.styleId) || null;
+      S.view = 'book';
+    }
+  }
   S.ready = true;
-  render();
-}
-
-async function openStory(id) {
-  const st = await S_.getStory(id);
-  if (!st) return;
-  S.story = st;
-  S.style = st.styleId ? (await S_.getStyle(st.styleId)) || null : null;
-  S_.saveCurrentId(id);
-  S.stack = ['shelf'];
-  S.view = 'book';
   render();
 }
 
 async function save() {
   if (!S.story) return;
+  S.story.updatedAt = Date.now();
   await S_.putStory(S.story);
-  S.stories = await S_.listStories();
+  S_.saveCurrentId(S.story.id);
 }
 
-const card = () => S_.cardById(S.story, S.cardId);
-const session = () => S_.sessOf(S.story, S.sessionId);
-const storyChars = () => (S.story.chapters || []).reduce((n, h) => n + chars(h.body), 0);
+const styleBrief = () => (S.style ? F.brief(S.style) : '');
 
 /* ---------------- 渲染 ---------------- */
 
 function render() {
-  if (!S.ready) {
-    $app.innerHTML = '<div class="boot">打开中…</div>';
-    return;
-  }
   let html = '';
-  const v = S.view;
-  if (v === 'shelf') html = viewShelf();
-  else if (v === 'book') html = viewBook();
-  else if (v === 'card') html = viewCard();
-  else if (v === 'act') html = viewAct();
-  else if (v === 'collect') html = viewCollect();
-  else if (v === 'timeline') html = viewTimeline();
-  else if (v === 'chapter') html = viewChapter();
-  else if (v === 'suggest') html = viewSuggest();
-  else if (v === 'styles') html = viewStyles();
-  else if (v === 'forge') html = viewForge();
-  else if (v === 'settings') html = viewSettings();
-
-  $app.innerHTML =
-    html +
-    (S.toast ? `<div class="toast">${esc(S.toast)}</div>` : '') +
-    '<div id="fatal"></div>';
-  const fatal = document.getElementById('fatal');
-  if (fatal && window.__sfLastError) {
-    fatal.textContent = window.__sfLastError;
-    fatal.classList.add('on');
+  try {
+    if (!S.ready) html = '<div class="boot">打开中…</div>';
+    else if (S.view === 'shelf') html = viewShelf();
+    else if (S.view === 'book') html = viewBook();
+    else if (S.view === 'entry') html = viewEntry();
+    else if (S.view === 'forge') html = viewForge();
+    else if (S.view === 'styles') html = viewStyles();
+    else if (S.view === 'settings') html = viewSettings();
+    else if (S.view === 'chapter') html = viewChapter();
+    else html = viewShelf();
+  } catch (e) {
+    window.__sfError('渲染 ' + S.view, e);
+    html = `<div class="wrap"><p class="err">这一页画不出来：${esc((e && e.message) || e)}</p></div>`;
   }
+  $app.innerHTML = html + '<div id="fatal"></div><div id="toast"></div>';
+  const inp = document.getElementById('say');
+  if (inp && S.input) inp.value = S.input;
+  if (S.story && S.view === 'book') {
+    const p = document.getElementById('prose');
+    if (p && !S.keepScroll) p.scrollTop = p.scrollHeight;
+  }
+  S.keepScroll = false;
 }
 
-function topbar(title, right = '', left = 'back') {
-  return `<header class="topbar">
-    <button class="ico" data-act="${left}">${left === 'back' ? '‹' : '⌂'}</button>
-    <h1>${esc(title)}</h1>
-    <div class="right">${right}</div>
-  </header>`;
+function back() {
+  S.story = null;
+  S.view = 'shelf';
+  S_.saveCurrentId('');
+  render();
 }
 
 /* ---------------- 书架 ---------------- */
 
 function viewShelf() {
-  const list = S.stories;
-  return `
-  <div class="wrap">
-    <header class="brand">
-      <div class="logo">写</div>
-      <div><b>我的故事</b><span>${list.length} 本 · ${S.styles.length} 份文风</span></div>
-    </header>
-    <div class="row-btns">
-      <button class="btn primary" data-act="newbook">开一本新书</button>
-      <button class="btn" data-act="go" data-to="styles">文风 ${S.styles.length}</button>
-      <button class="btn" data-act="go" data-to="settings">设置</button>
+  const rows = S.stories
+    .map(
+      (s) => `<button class="rowline" data-act="opentile" data-id="${esc(s.id)}">
+        <b>${esc(s.title || '未命名')}</b>
+        <span>${(s.corpus && s.corpus.paragraphs ? s.corpus.paragraphs.filter((p) => !p.folded).length : 0)} 段</span>
+      </button>`
+    )
+    .join('');
+  return `<div class="wrap">
+    <header class="simple"><h1>我的故事</h1></header>
+    <div class="shelfbody">
+      ${rows || '<p class="dim">还没有书。</p>'}
     </div>
-    ${list.length
-      ? `<div class="seclabel">书架</div><div class="grid">${list.map(bookTile).join('')}</div>`
-      : '<div class="empty"><div class="big">还没有书</div><p>开一本新的，先放几张设定卡。</p></div>'}
+    <div class="row-btns">
+      <button class="btn primary wide" data-act="entry-start">写一本新的</button>
+    </div>
+    <div class="row-btns">
+      <button class="btn ghost" data-act="go-styles">文风 ${S.styles.length}</button>
+      <button class="btn ghost" data-act="go-settings">设置</button>
+    </div>
   </div>`;
 }
 
-function bookTile(s) {
-  const w = (s.chapters || []).reduce((n, h) => n + chars(h.body), 0);
-  return `<div class="tile" data-act="openbook" data-id="${s.id}">
-    <b>${esc(s.title)}</b>
-    <span>${(s.cards || []).length} 张卡 · ${fmt(w)} 字</span>
-  </div>`;
-}
-
-/* ---------------- 书内：卡片墙 ---------------- */
+/* ---------------- 正文（主屏） ---------------- */
 
 function viewBook() {
   const st = S.story;
-  return `
-  ${topbar(st.title, `<button class="ico" data-act="book-menu">⋯</button>`, 'shelf')}
-  <div class="wrap">
-    <div class="row-btns">
-      <button class="btn ghost" data-act="go" data-to="timeline">时间轴 · ${S_.eventsOf(st).length}</button>
-      <button class="btn ghost" data-act="go" data-to="chapters">章节 · ${(st.chapters || []).length}</button>
-      <button class="btn ghost" data-act="suggest-open">让 AI 提设定</button>
-    </div>
-    ${S_.KIND_ORDER.map((k) => groupOf(k)).join('')}
-    <div class="dim center pad">共 ${fmt(storyChars())} 字</div>
-  </div>`;
-}
-
-function groupOf(kind) {
-  const def = S_.CARD_KINDS[kind];
-  const list = S_.cardsOf(S.story, kind);
-  const rows = list.map((c) => cardRow(c)).join('');
-  const add = def.single ? '' : `<button class="lnk" data-act="addcard" data-kind="${kind}">＋ 加一张</button>`;
-  return `<div class="cwgroup">
-    <div class="cwhead"><b>${def.name}</b>${add}</div>
-    <div class="dim">${def.hint}</div>
-    <div class="cwlist">${rows || '<div class="dim">还没写。</div>'}</div>
-  </div>`;
-}
-
-function cardRow(c) {
-  const preview = S_.cardText(c).replace(/\n/g, ' ').slice(0, 46);
-  const n = (c.kind === 'outline' && Array.isArray(c.events)) ? ` · ${c.events.length} 个事件` : '';
-  return `<div class="ccard" data-act="opencard" data-id="${c.id}">
-    <b>${esc(c.title)}</b>
-    <span>${esc(preview || '（空）')}${n}</span>
-  </div>`;
-}
-
-/* ---------------- 卡详情 ---------------- */
-
-function viewCard() {
-  const c = card();
-  if (!c) {
-    go('book');
-    return '';
-  }
-  const def = S_.CARD_KINDS[c.kind];
-  const patches = (S.story.patches || []).filter((p) => p.cardId === c.id && p.applied && !p.undone);
-  return `${topbar(c.title, c.kind === 'world' || c.kind === 'outline' ? '' : `<button class="ico" data-act="card-del">删</button>`)}
-  <div class="wrap">
-    <div class="panel">
-      <div class="seclabel">标题</div>
-      <input class="field" id="card-title" value="${esc(c.title)}">
-      <div class="dim">${def.name} · 演完一场记得点「收束」，把结果写回这张卡。</div>
-    </div>
-    ${c.sections.map((s, i) => `
-    <div class="panel">
-      <div class="seclabel">${esc(s.label)}</div>
-      <textarea class="field" rows="4" data-card="${c.id}" data-sec="${i}">${esc(s.text)}</textarea>
-    </div>`).join('')}
-    ${c.kind === 'outline' ? eventEditor(c) : ''}
-    <div class="row-btns">
-      <button class="btn primary" data-act="startact" ${S.busy ? 'disabled' : ''}>演绎这张卡</button>
-      ${patches.length ? `<button class="btn ghost" data-act="card-hist">收束记录 ${patches.length}</button>` : ''}
-    </div>
-    ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
-  </div>`;
-}
-
-function eventEditor(c) {
-  const rows = (c.events || [])
-    .map((e, i) => `<div class="evitem">
-      <input class="f-when" value="${esc(e.when)}" data-ev="${e.id}" data-k="when" placeholder="时间">
-      <input class="f-title" value="${esc(e.title)}" data-ev="${e.id}" data-k="title" placeholder="发生了什么">
-      <input class="f-cost" value="${esc(e.summary)}" data-ev="${e.id}" data-k="summary" placeholder="谁付出代价">
-      <button class="ico" data-act="ev-del" data-id="${e.id}">×</button>
-    </div>`)
+  if (!st) return viewShelf();
+  const ps = C.liveParagraphs(st);
+  const ob = C.openObligation(st);
+  const need = ob ? ob.text : '';
+  const body = ps
+    .map((p) => {
+      const cls = p.speaker === 'me' ? 'me' : p.status === 'violation' ? 'bad' : p.status === 'assumed' ? 'guess' : '';
+      return `<p class="${cls}" data-para="${esc(p.id)}">${esc(p.text)}</p>`;
+    })
     .join('');
-  return `<div class="panel">
-    <div class="seclabel">事件链</div>
-    <div class="dim">事件是大纲的一环，会按顺序投影到时间轴上。</div>
-    ${rows || '<div class="dim">还没有事件。演绎大纲或直接加。</div>'}
-    <button class="lnk" data-act="ev-add">＋ 加一个事件</button>
+  const live = S.live ? `<p class="live" id="live">${esc(S.live)}</p>` : '<p class="live" id="live"></p>';
+  const menu = S.menu ? drawerMenu(S.menu) : '';
+  const drawer = S.drawer ? drawerHTML() : '';
+  return `<div class="book">
+    <header class="bookhead">
+      <button class="icon" data-act="back" title="书架">‹</button>
+      <span class="bname">${esc(st.title)}</span>
+      <button class="icon" data-act="drawer" data-id="people" title="人物">人</button>
+      <button class="icon" data-act="drawer" data-id="facts" title="事实">实</button>
+      <button class="icon" data-act="more" title="更多">⋯</button>
+    </header>
+    ${need ? `<div class="need">这一场还差：${esc(need)}</div>` : ''}
+    <div class="prose" id="prose">${body || '<p class="dim">从这里开始写。</p>'}${live}</div>
+    <footer class="composer">
+      <input id="say" class="say" placeholder="我这一下……" value="${esc(S.input)}" autocomplete="off">
+      <button class="btn primary saybtn" data-act="say" ${S.busy ? 'disabled' : ''}>${S.busy ? '…' : '写'}</button>
+    </footer>
+    <div class="wc">${C.wordCount(st)} 字</div>
+    ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
+    ${drawer}${menu}
   </div>`;
 }
 
-/* ---------------- 演绎 ---------------- */
-
-function viewAct() {
-  const c = card();
-  const ss = session();
-  if (!c || !ss) {
-    go('book');
-    return '';
-  }
-  const def = S_.CARD_KINDS[c.kind];
-  const head = {
-    world: '演世界。不出现主角。',
-    setting: '演这条设定被推到底会怎样。',
-    character: '演这个人。以他的「我」来说话。',
-    outline: '演剧情走向，一次一个岔路口。',
-    narrative: '演这套讲法写出来是什么效果。',
-  }[c.kind];
-
-  const msgs = (ss.msgs || [])
-    .map((m) => (m.role === 'me'
-      ? `<div class="msg me">${esc(m.text)}</div>`
-      : `<div class="msg gm">${esc(m.text)}</div>`))
-    .join('');
-
-  return `${topbar(c.title, `<button class="ico" data-act="collect" ${S.busy || !(ss.msgs || []).length ? 'disabled' : ''}>收束</button>`)}
-  <div class="wrap">
-    <div class="dim">${esc(head)}</div>
-    <div class="msgs">
-      ${msgs}
-      ${S.busy ? `<div class="msg gm live" id="live">${esc(S.live)}</div>` : ''}
+function drawerMenu(id) {
+  return `<div class="mask" data-act="menu-close">
+    <div class="sheet" data-stop="1">
+      <button class="sheetbtn" data-act="para-rewrite" data-id="${esc(id)}">重写这一段</button>
+      <button class="sheetbtn" data-act="para-from" data-id="${esc(id)}">从这里重新来</button>
+      <button class="sheetbtn" data-act="para-notmine" data-id="${esc(id)}">这段不像我写的</button>
+      <button class="sheetbtn ghost" data-act="menu-close">取消</button>
     </div>
-    ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
-    ${!S.busy && (ss.options || []).length
-      ? `<div class="opts">${ss.options.map((o) => `<button class="opt" data-act="act-say" data-t="${esc(o)}">${esc(o)}</button>`).join('')}</div>`
-      : ''}
-    <div class="composer">
-      <textarea class="field" id="say" rows="2" placeholder="${(ss.msgs || []).length ? '你要做什么、说什么' : '点这里让它起头，或者直接写第一句'}">${esc(S.input)}</textarea>
-      <div class="row-btns">
-        <button class="btn ghost" data-act="act-say" data-t="" ${S.busy ? 'disabled' : ''}>${(ss.msgs || []).length ? '照我说的' : '让它起头'}</button>
+  </div>`;
+}
+
+function drawerHTML() {
+  const st = S.story;
+  const c = C.corpusOf(st);
+  const tab = S.drawer;
+  let body = '';
+  if (tab === 'people') {
+    body = c.people.length
+      ? c.people
+          .map(
+            (p) => `<div class="drow"><b>${esc(p.name)}</b>
+        <div class="dim">要：${esc(p.want || '—')}</div>
+        <div class="dim">不肯说：${esc(p.secret || '—')}</div>
+        <div class="dim">说话：${esc(p.voice || '—')}</div>
+        ${(p.knows || []).length ? `<div class="dim">知道：${esc((p.knows || []).join('；'))}</div>` : ''}
+      </div>`
+          )
+          .join('')
+      : '<p class="dim">还没有人物。</p>';
+  } else if (tab === 'facts') {
+    const fs = C.liveFacts(st);
+    body = fs.length ? fs.map((f) => `<div class="drow"><span>${esc(f.text)}</span></div>`).join('') : '<p class="dim">还没有成立的事实。</p>';
+  } else if (tab === 'hard') {
+    body =
+      (c.hard.length ? c.hard.map((h) => `<div class="drow"><span>${esc(h.text)}</span><button class="icon" data-act="hard-del" data-id="${esc(h.id)}">×</button></div>`).join('') : '<p class="dim">还没有约束。</p>') +
+      `<div class="drow"><input class="field" id="hard-new" placeholder="这里什么不可能发生"><button class="btn ghost" data-act="hard-add">加</button></div>`;
+  } else if (tab === 'oblig') {
+    body =
+      (c.obligations.length
+        ? c.obligations
+            .map(
+              (o) =>
+                `<div class="drow"><span class="${o.state === 'open' ? '' : 'dim'}">${o.kind === 'must' ? '【必经】' : ''}${esc(o.text)}</span>${
+                  o.state === 'open' ? `<button class="icon" data-act="ob-done" data-id="${esc(o.id)}">✓</button>` : '<span class="dim">已了</span>'
+                }</div>`
+            )
+            .join('')
+        : '<p class="dim">还没有义务。</p>') +
+      `<div class="drow"><input class="field" id="ob-new" placeholder="这一场还差什么"><button class="btn ghost" data-act="ob-add">加</button></div>`;
+  } else {
+    body = `<div class="drow"><input class="field" id="book-title" value="${esc(st.title)}"><button class="btn ghost" data-act="rename">改名</button></div>
+      <div class="drow"><button class="btn ghost wide" data-act="go-chapter">看整本</button></div>
+      <div class="drow"><button class="btn ghost wide" data-act="export">导出 txt</button></div>
+      <div class="drow"><button class="btn ghost wide" data-act="go-forge">文风</button></div>
+      <div class="drow"><button class="btn ghost wide" data-act="go-settings">设置</button></div>`;
+  }
+  return `<div class="mask" data-act="drawer-close">
+    <aside class="drawer" data-stop="1">
+      <div class="dtabs">
+        ${['people', 'facts', 'hard', 'oblig', 'more']
+          .map((k) => `<button class="dtab ${tab === k ? 'on' : ''}" data-act="drawer" data-id="${k}">${
+            { people: '人物', facts: '事实', hard: '约束', oblig: '义务', more: '更多' }[k]
+          }</button>`)
+          .join('')}
       </div>
-    </div>
+      <div class="dbody">${body}</div>
+    </aside>
   </div>`;
 }
 
-async function actSend(text) {
-  const c = card();
-  const ss = session();
-  if (!c || !ss || S.busy) return;
-  const t = String(text || '').trim();
-  if (t) ss.msgs.push({ role: 'me', text: t });
-  S.input = '';
-  S.err = '';
-  S.busy = true;
-  S.live = '';
-  render();
-  try {
-    const out = await streamChat({
-      baseUrl: S.settings.baseUrl,
-      apiKey: S.settings.apiKey,
-      model: S.settings.model,
-      effort: S.settings.effort,
-      messages: P.turnMessages(S.story, c, ss, S.style ? E.brief(S.style) : ''),
-      maxTokens: 1800,
-      temperature: 0.9,
-      onDelta: (d, full) => {
-        S.live = full;
-        const el = document.getElementById('live');
-        if (el) el.textContent = full;
-      },
-    });
-    const { body, options } = P.splitOut(out);
-    if (!body) throw new Error('模型这次没写正文。再点一次。');
-    ss.msgs.push({ role: 'gm', text: body });
-    ss.options = options;
-    await save();
-  } catch (err) {
-    S.err = err.message || String(err);
-  } finally {
-    S.busy = false;
-    S.live = '';
-    render();
+/* ---------------- 启动向导 ---------------- */
+
+function viewEntry() {
+  const e = S.entry || (S.entry = { step: 1, pack: '', entry: '', answer: '', dislike: '', extraHard: '', busy: false, err: '' });
+  const pack = E.packById(e.pack);
+  if (e.step === 1) {
+    return `<div class="wrap">
+      <header class="simple"><button class="icon" data-act="go-shelf">‹</button><h1>写什么题材</h1></header>
+      <p class="dim">不确定也没关系，先挑一个最像的。</p>
+      <div class="packs">${E.PACKS.map(
+        (p) => `<button class="pack" data-act="entry-pack" data-id="${p.id}"><b>${p.name}</b><span>${p.hint}</span></button>`
+      ).join('')}</div>
+    </div>`;
   }
+  if (e.step === 2) {
+    return `<div class="wrap">
+      <header class="simple"><button class="icon" data-act="entry-back">‹</button><h1>${pack.name}</h1></header>
+      <p class="dim">这些是这个世界里不可能发生的事。有不一样的可以改。</p>
+      <ul class="hardlist">${pack.hard.map((h) => `<li>${esc(h)}</li>`).join('')}</ul>
+      <input class="field" id="entry-hard" placeholder="要补一条不同意的？可以留空" value="${esc(e.extraHard)}">
+      <div class="row-btns"><button class="btn primary wide" data-act="entry-next">下一步</button></div>
+    </div>`;
+  }
+  if (e.step === 3) {
+    return `<div class="wrap">
+      <header class="simple"><button class="icon" data-act="entry-back">‹</button><h1>从哪儿开始</h1></header>
+      <p class="dim">哪个答得上来就答哪个，一个就够。</p>
+      ${E.ENTRIES.map(
+        (x) => `<div class="entryone">
+          <button class="btn ghost wide ${e.entry === x.id ? 'on' : ''}" data-act="entry-pick" data-id="${x.id}">${x.label}</button>
+          ${e.entry === x.id ? `<p class="ask">${x.ask}</p><textarea class="field" id="entry-answer" rows="3" placeholder="${esc(x.placeholder)}">${esc(e.answer)}</textarea>` : ''}
+        </div>`
+      ).join('')}
+      <p class="ask">还有一句（可以不填）：这个题材里你最受不了什么？</p>
+      <input class="field" id="entry-dislike" placeholder="例：最受不了主角一开局就无敌" value="${esc(e.dislike)}">
+      <div class="row-btns"><button class="btn primary wide" data-act="entry-go" ${e.busy ? 'disabled' : ''}>${e.busy ? '正在起头…' : '开始写'}</button></div>
+      ${e.err ? `<div class="err">${esc(e.err)}</div>` : ''}
+    </div>`;
+  }
+  return '';
 }
 
-/* ---------------- 收束 ---------------- */
-
-async function startCollect() {
-  const c = card();
-  const ss = session();
-  if (!c || !ss || S.busy) return;
-  S.busy = true;
-  S.err = '';
+async function entryGo() {
+  const e = S.entry;
+  e.answer = (document.getElementById('entry-answer') || {}).value || '';
+  e.dislike = (document.getElementById('entry-dislike') || {}).value || '';
+  if (!e.entry) {
+    e.err = '先挑一个：一个画面 / 一个处境 / 一个人。';
+    render();
+    return;
+  }
+  if (!String(e.answer).trim()) {
+    e.err = '填一句就行，不用完整。';
+    render();
+    return;
+  }
+  e.busy = true;
+  e.err = '';
   render();
   try {
     const raw = await chat({
       baseUrl: S.settings.baseUrl,
       apiKey: S.settings.apiKey,
       model: S.settings.model,
+      messages: E.seedMessages({ packId: e.pack, entryId: e.entry, answer: e.answer, dislike: e.dislike, extraHard: e.extraHard }),
+      json: true,
+      maxTokens: 1200,
       effort: S.settings.effort,
-      messages: P.collectMessages(S.story, c, ss),
-      maxTokens: 2400,
     });
-    const got = P.parseCollect(raw, c);
-    if (!got.sections.length) throw new Error('没读懂整理结果，再点一次。');
-    const changes = got.sections
-      .map((s, i) => {
-        const cur = c.sections.find((x) => x.label === s.label);
-        return { label: s.label, before: cur ? cur.text : '', after: s.text };
-      })
-      .filter((x) => x.after !== x.before);
-    const patch = {
-      id: 'p' + Date.now().toString(36),
-      cardId: c.id,
-      sessionId: ss.id,
-      at: Date.now(),
-      changes,
-      events: got.events || [],
-      applied: false,
-      undone: false,
-    };
-    S.story.patches.push(patch);
-    const draftSession = S.story.sessions.find((x) => x.id === ss.id);
-    if (draftSession) draftSession.closed = true;
-    S.patchId = patch.id;
-    await save();
-    go('collect');
-  } catch (err) {
-    S.err = err.message || String(err);
-  } finally {
-    S.busy = false;
-    render();
-  }
-}
-
-function viewCollect() {
-  const patch = (S.story.patches || []).find((p) => p.id === S.patchId);
-  const c = card();
-  if (!patch || !c) {
-    go('card');
-    return '';
-  }
-  return `${topbar('收束进《' + c.title + '》')}
-  <div class="wrap">
-    <div class="dim">确认之后才会写进这张卡，写错了可以撤销。</div>
-    ${patch.changes.length
-      ? patch.changes.map((ch) => `<div class="panel">
-          <div class="seclabel">${esc(ch.label)}</div>
-          ${ch.before ? `<div class="diff old"><span>原来</span><p>${esc(ch.before)}</p></div>` : ''}
-          <div class="diff new"><span>${ch.before ? '改为' : '新增'}</span><p>${esc(ch.after)}</p></div>
-        </div>`).join('')
-      : '<div class="panel"><div class="dim">这一场没有改动这张卡的正文。</div></div>'}
-    ${patch.events.length
-      ? `<div class="panel"><div class="seclabel">新事件 ${patch.events.length} 个</div>
-        ${patch.events.map((e) => `<div class="evread">${esc([e.when, e.title, e.cost].filter(Boolean).join('｜'))}</div>`).join('')}
-      </div>`
-      : ''}
-    <div class="row-btns">
-      <button class="btn ghost" data-act="collect-drop">不要了</button>
-      <button class="btn primary" data-act="collect-ok">确认写进卡里</button>
-    </div>
-  </div>`;
-}
-
-async function applyCollect() {
-  const patch = (S.story.patches || []).find((p) => p.id === S.patchId);
-  const c = card();
-  if (!patch || !c) return;
-  for (const ch of patch.changes) {
-    const sec = c.sections.find((s) => s.label === ch.label);
-    if (sec) sec.text = ch.after;
-  }
-  if (c.kind === 'outline' && patch.events && patch.events.length) {
-    c.events = c.events || [];
-    for (const e of patch.events) {
-      c.events.push(S_.newEvent(e.title, e.when, e.cost || e.summary || ''));
+    const seed = E.parseSeed(raw);
+    if (!seed) throw new Error('这次没写出开头，再点一次。');
+    const st = S_.newStory(seed.title);
+    st.entry = { pack: e.pack, entry: e.entry };
+    C.normalizeCorpus(st);
+    seed.hard.forEach((h) => C.addHard(st, h, 'pack'));
+    C.addPerson(st, { ...seed.person, from: 'seed' });
+    if (seed.need) {
+      const ob = C.addObligation(st, seed.need, 'todo');
+      const sc = C.curScene(st);
+      if (sc) sc.obligationId = ob.id;
     }
+    C.appendParagraph(st, { text: seed.opening, speaker: 'ai' });
+    S.stories.unshift(st);
+    await S_.putStory(st);
+    S.story = st;
+    S.style = S.styles.find((x) => x.id === st.styleId) || null;
+    S.entry = null;
+    S.view = 'book';
+    S_.saveCurrentId(st.id);
+  } catch (err) {
+    e.err = (err && err.message) || '出错了';
   }
-  patch.applied = true;
-  await save();
-  S.patchId = '';
-  toast('已写进卡里');
-  go('card');
-}
-
-async function undoPatch(id) {
-  const patch = (S.story.patches || []).find((p) => p.id === id);
-  const c = card();
-  if (!patch || !c || patch.undone) return;
-  for (const ch of patch.changes) {
-    const sec = c.sections.find((s) => s.label === ch.label);
-    if (sec) sec.text = ch.before;
-  }
-  patch.undone = true;
-  await save();
-  toast('已撤销这次收束');
+  e.busy = false;
   render();
 }
 
-/* ---------------- 时间轴 ---------------- */
+/* ---------------- 写作流水线 ---------------- */
 
-function viewTimeline() {
-  const evs = S_.eventsOf(S.story);
-  const picked = Object.keys(S.picks || {}).filter((k) => S.picks[k]);
-  return `${topbar('时间轴')}
-  <div class="wrap">
-    <div class="dim">勾选连续的一段事件，然后写这一章。</div>
-    ${evs.length
-      ? `<div class="evlist">${evs.map((e, i) => `<label class="evrow ${S.picks[e.id] ? 'on' : ''}">
-          <input type="checkbox" data-pick="${e.id}" ${S.picks[e.id] ? 'checked' : ''}>
-          <em>${i + 1}</em>
-          <div><b>${esc(e.when || '—')}</b><span>${esc(e.title)}${e.summary ? '｜' + esc(e.summary) : ''}</span></div>
-        </label>`).join('')}</div>`
-      : '<div class="empty"><div class="big">时间轴还是空的</div><p>去大纲里加事件，或者演一场大纲再收束。</p></div>'}
-    <div class="row-btns">
-      <button class="btn primary" data-act="chapter-from" ${picked.length ? '' : 'disabled'}>从选中的 ${picked.length} 个事件写一章</button>
-    </div>
+async function check(text) {
+  try {
+    const raw = await chat({
+      baseUrl: S.settings.baseUrl,
+      apiKey: S.settings.apiKey,
+      model: S.settings.model,
+      messages: G.guardMessages(S.story, text),
+      json: true,
+      maxTokens: 700,
+      effort: 'off',
+    });
+    return G.parseGuard(raw);
+  } catch (e) {
+    return { ok: true, issues: [], facts: [], knows: {}, done: false, skipped: true };
+  }
+}
+
+function paintLive() {
+  const el = document.getElementById('live');
+  if (el) el.textContent = S.live;
+  const box = document.getElementById('prose');
+  if (box) box.scrollTop = box.scrollHeight;
+}
+
+function applySediment(v, paragraphId) {
+  (v.facts || []).forEach((f) => C.addFact(S.story, f, paragraphId));
+  Object.entries(v.knows || {}).forEach(([name, list]) => list.forEach((k) => C.addKnows(S.story, name, k)));
+  if (v.done) {
+    const ob = C.openObligation(S.story);
+    if (ob) C.settleObligation(S.story, ob.id, 'done');
+    C.closeScene(S.story, 'done');
+    C.addScene(S.story, {});
+  }
+}
+
+async function actSend(text) {
+  const t = String(text || '').trim();
+  if (!t || S.busy || !S.story) return;
+  if (!S.settings.apiKey) {
+    S.err = '还没有填密钥，去设置里填一下。';
+    render();
+    return;
+  }
+  S.busy = true;
+  S.err = '';
+  S.live = '';
+  C.appendParagraph(S.story, { text: t, speaker: 'me' });
+  render();
+  try {
+    const brief = styleBrief();
+    let out = await streamChat({
+      baseUrl: S.settings.baseUrl,
+      apiKey: S.settings.apiKey,
+      model: S.settings.model,
+      messages: [{ role: 'system', content: C.trunkSystem(S.story, brief) }, ...C.trunkMessages(S.story, t, brief)],
+      maxTokens: 900,
+      effort: S.settings.effort,
+      onDelta: (d) => {
+        S.live += d;
+        paintLive();
+      },
+    });
+    let v = await check(out);
+    if (v.issues.length) {
+      S.live = '';
+      S.keepScroll = false;
+      render();
+      try {
+        out = await streamChat({
+          baseUrl: S.settings.baseUrl,
+          apiKey: S.settings.apiKey,
+          model: S.settings.model,
+          messages: [
+            { role: 'system', content: C.trunkSystem(S.story, brief) },
+            ...C.trunkMessages(S.story, t, brief),
+            { role: 'user', content: G.rewriteHint(v.issues) },
+          ],
+          maxTokens: 900,
+          effort: S.settings.effort,
+          onDelta: (d) => {
+            S.live += d;
+            paintLive();
+          },
+        });
+        v = await check(out);
+      } catch (e) {
+        /* 重写失败就落第一版 */
+      }
+    }
+    const p = C.appendParagraph(S.story, {
+      text: out,
+      speaker: 'ai',
+      status: v.issues.length ? 'violation' : 'ok',
+      note: v.issues.map((i) => G.ISSUE_KINDS[i.kind]).join(' / '),
+    });
+    applySediment(v, p.id);
+    await save();
+  } catch (e) {
+    S.err = (e && e.message) || '这一段没写出来';
+  }
+  S.busy = false;
+  S.live = '';
+  render();
+}
+
+async function rewriteParagraph(id) {
+  const st = S.story;
+  const ps = C.liveParagraphs(st);
+  const idx = ps.findIndex((p) => p.id === id);
+  if (idx < 0) return;
+  // 找到这一段之前最近的一句「我」
+  let mine = '';
+  for (let i = idx; i >= 0; i -= 1) {
+    if (ps[i].speaker === 'me') {
+      mine = ps[i].text;
+      break;
+    }
+  }
+  const target = ps[idx];
+  const from = target.speaker === 'me' ? target.id : target.id;
+  C.rollbackFrom(st, from);
+  if (target.speaker === 'me') {
+    S.busy = false;
+    render();
+    await actSend(mine);
+  } else {
+    render();
+    await actSend(mine || '接着写');
+  }
+}
+
+/* ---------------- 文风 / 设置 / 章节 ---------------- */
+
+function viewStyles() {
+  const rows = S.styles
+    .map((w) => `<button class="rowline" data-act="style-open" data-id="${esc(w.id)}"><b>${esc(w.name)}</b><span>${esc(F.describe(w))}</span></button>`)
+    .join('');
+  return `<div class="wrap">
+    <header class="simple"><button class="icon" data-act="go-shelf">‹</button><h1>文风</h1></header>
+    ${rows || '<p class="dim">还没有文风。</p>'}
+    <div class="row-btns"><button class="btn primary wide" data-act="forge-start">提取一份新文风</button></div>
   </div>`;
 }
 
-/* ---------------- 章节 ---------------- */
+function viewSettings() {
+  const s = S.settings;
+  const models = (s.models || []).map((m) => `<label class="chk"><input type="checkbox" data-model="${esc(m)}" ${m === s.model ? 'checked' : ''}><span>${esc(m)}</span></label>`).join('');
+  return `<div class="wrap">
+    <header class="simple"><button class="icon" data-act="go-shelf">‹</button><h1>设置</h1></header>
+    <div class="panel">
+      <div class="seclabel">接口</div>
+      <input class="field" id="set-base" value="${esc(s.baseUrl)}">
+      <input class="field" id="set-key" type="password" placeholder="密钥" value="${esc(s.apiKey)}">
+      <div class="row-btns"><button class="btn ghost" data-act="test">测一下</button><button class="btn ghost" data-act="loadmodels">读取模型</button></div>
+      <div class="dim">${esc(S.testMsg || '')}</div>
+    </div>
+    <div class="panel">
+      <div class="seclabel">可用模型</div>
+      ${models || '<p class="dim">先读取模型。</p>'}
+      <div class="seclabel">推理等级</div>
+      <select class="field" id="set-effort">
+        <option value="off" ${s.effort === 'off' ? 'selected' : ''}>关 —— 不发这个参数，最快</option>
+        <option value="low" ${s.effort === 'low' ? 'selected' : ''}>低</option>
+        <option value="medium" ${s.effort === 'medium' ? 'selected' : ''}>中</option>
+        <option value="high" ${s.effort === 'high' ? 'selected' : ''}>高</option>
+      </select>
+    </div>
+    <div class="row-btns"><button class="btn primary wide" data-act="save-settings">保存</button></div>
+  </div>`;
+}
 
 function viewChapter() {
   const st = S.story;
-  const id = S.chapterId;
-  if (id === 'list') return viewChapterList();
-  const ch = (st.chapters || []).find((x) => x.id === id);
-  if (!ch) return viewChapterList();
-  const narrs = S_.cardsOf(st, 'narrative');
-  const evs = S_.eventsOf(st).filter((e) => (ch.eventIds || []).includes(e.id));
-  return `${topbar(ch.title || '这一章')}
-  <div class="wrap">
-    <div class="panel">
-      <div class="seclabel">题目</div>
-      <input class="field" id="ch-title" value="${esc(ch.title)}">
-      <div class="seclabel" style="margin-top:14px">叙事形式</div>
-      ${narrs.length
-        ? `<select class="field" id="ch-narr">${narrs.map((n) => `<option value="${n.id}" ${n.id === ch.narrativeId ? 'selected' : ''}>${esc(n.title)}</option>`).join('')}<option value="" ${!ch.narrativeId ? 'selected' : ''}>（不指定）</option></select>`
-        : '<div class="dim">还没有叙事形式卡。去书里加一张，写上视角、时态、声音、体例。</div>'}
-      <div class="dim" style="margin-top:10px">骨架：${evs.length ? evs.map((e) => esc(e.title)).join(' → ') : '（没选事件）'}</div>
-    </div>
-    <div class="err">${S.err ? esc(S.err) : ''}</div>
-    ${ch.body
-      ? `<div class="panel"><div class="prose">${esc(ch.body)}</div></div><div class="dim center">${fmt(chars(ch.body))} 字</div>`
-      : '<div class="panel"><div class="dim">还没写。</div></div>'}
-    <div class="row-btns">
-      <button class="btn primary" data-act="chapter-gen" ${S.busy ? 'disabled' : ''}>${ch.body ? '重写这一章' : '写这一章'}</button>
-      ${ch.body ? '<button class="btn ghost" data-act="chapter-export">导出一份</button>' : ''}
-    </div>
+  const ps = C.liveParagraphs(st);
+  return `<div class="wrap">
+    <header class="simple"><button class="icon" data-act="back-book">‹</button><h1>${esc(st.title)}</h1></header>
+    <div class="prose read">${ps.map((p) => `<p>${esc(p.text)}</p>`).join('') || '<p class="dim">还没有正文。</p>'}</div>
+    <div class="row-btns"><button class="btn ghost wide" data-act="export">导出 txt</button></div>
   </div>`;
 }
 
-function viewChapterList() {
-  const list = S.story.chapters || [];
-  return `${topbar('章节')}
-  <div class="wrap">
-    ${list.length
-      ? `<div class="list">${list.map((h) => `<div class="row" data-act="open-chapter" data-id="${h.id}">
-          <div class="t">${esc(h.title || '未命名')}</div>
-          <div class="s">${fmt(chars(h.body))} 字 · ${(h.eventIds || []).length} 个事件</div>
-        </div>`).join('')}</div>`
-      : '<div class="empty"><div class="big">还没有章节</div><p>去时间轴勾一段事件，写第一章。</p></div>'}
-  </div>`;
+/* ---------------- 事件 ---------------- */
+
+function handler(e) {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const act = el.dataset.act;
+  const id = el.dataset.id;
+  const stop = e.target.closest('[data-stop]');
+  if (act === 'drawer-close' || act === 'menu-close') {
+    if (stop && e.target.closest('[data-stop]') && !e.target.closest('[data-act="drawer-close"],[data-act="menu-close"]')) return;
+  }
+  switch (act) {
+    case 'back':
+      S_.saveCurrentId('');
+      S.view = 'shelf';
+      S.story = null;
+      return render();
+    case 'go-shelf':
+      S.view = 'shelf';
+      return render();
+    case 'back-book':
+      S.view = 'book';
+      return render();
+    case 'opentile':
+      return openTile(id);
+    case 'drawer':
+      S.drawer = S.drawer === id ? '' : id;
+      return render();
+    case 'drawer-close':
+      S.drawer = '';
+      return render();
+    case 'menu':
+      S.menu = id || '';
+      return render();
+    case 'menu-close':
+      S.menu = '';
+      return render();
+    case 'say':
+      return doSay();
+    case 'entry-start':
+      S.entry = { step: 1, pack: '', entry: '', answer: '', dislike: '', extraHard: '', busy: false, err: '' };
+      S.view = 'entry';
+      return render();
+    case 'entry-pack':
+      S.entry.pack = id;
+      S.entry.step = 2;
+      return render();
+    case 'entry-back':
+      S.entry.step = Math.max(1, S.entry.step - 1);
+      return render();
+    case 'entry-next':
+      S.entry.extraHard = (document.getElementById('entry-hard') || {}).value || '';
+      S.entry.step = 3;
+      return render();
+    case 'entry-pick':
+      S.entry.entry = id;
+      S.entry.answer = '';
+      return render();
+    case 'entry-go':
+      return entryGo();
+    case 'go-styles':
+      S.view = 'styles';
+      return render();
+    case 'go-settings':
+      S.view = 'settings';
+      S.testMsg = '';
+      return render();
+    case 'go-chapter':
+      S.drawer = '';
+      S.view = 'chapter';
+      return render();
+    case 'go-forge':
+      S.drawer = '';
+      S.view = 'forge';
+      return render();
+    case 'para-rewrite':
+      S.menu = '';
+      return rewriteParagraph(id);
+    case 'para-from':
+      S.menu = '';
+      C.rollbackFrom(S.story, id);
+      save();
+      return render();
+    case 'para-notmine':
+      S.menu = '';
+      toast('记下了：这一段不算你的。');
+      return render();
+    case 'rename': {
+      const v = (document.getElementById('book-title') || {}).value || '';
+      if (v.trim()) S.story.title = v.trim();
+      save();
+      return render();
+    }
+    case 'hard-add': {
+      const v = (document.getElementById('hard-new') || {}).value || '';
+      if (v.trim()) C.addHard(S.story, v);
+      save();
+      return render();
+    }
+    case 'hard-del':
+      S.story.corpus.hard = C.corpusOf(S.story).hard.filter((h) => h.id !== id);
+      save();
+      return render();
+    case 'ob-add': {
+      const v = (document.getElementById('ob-new') || {}).value || '';
+      if (v.trim()) C.addObligation(S.story, v);
+      save();
+      return render();
+    }
+    case 'ob-done':
+      C.settleObligation(S.story, id, 'done');
+      save();
+      return render();
+    case 'export':
+      return exportTxt();
+    case 'test':
+      return doTest();
+    case 'loadmodels':
+      return doLoadModels();
+    case 'save-settings':
+      return doSaveSettings();
+    case 'forge-start':
+      S.view = 'forge';
+      return startForge();
+    case 'style-open': {
+      S.style = S.styles.find((x) => x.id === id) || null;
+      if (S.story) {
+        S.story.styleId = S.style ? S.style.id : '';
+        save();
+      }
+      toast(S.style ? '用上这份文风了' : '取消了文风');
+      return render();
+    }
+    default:
+      return undefined;
+  }
 }
 
-async function genChapter() {
-  const ch = (S.story.chapters || []).find((x) => x.id === S.chapterId);
-  if (!ch || S.busy) return;
-  ch.title = (document.getElementById('ch-title') || {}).value || ch.title;
-  const sel = document.getElementById('ch-narr');
-  if (sel) ch.narrativeId = sel.value;
-  if (!ch.title) ch.title = '第 ' + ((S.story.chapters || []).length + 1) + ' 章';
-  const evs = S_.eventsOf(S.story).filter((e) => (ch.eventIds || []).includes(e.id));
-  const narr = ch.narrativeId ? S_.cardById(S.story, ch.narrativeId) : null;
-  S.busy = true;
-  S.err = '';
-  ch.history = ch.history || [];
-  ch.history.push(ch.body || '');
+async function openTile(id) {
+  const st = await S_.getStory(id);
+  if (!st) return;
+  S.story = S_.normalizeStory(st);
+  S.style = S.styles.find((x) => x.id === S.story.styleId) || null;
+  S.view = 'book';
+  S_.saveCurrentId(S.story.id);
+  render();
+}
+
+function doSay() {
+  const el = document.getElementById('say');
+  const v = el ? el.value : S.input;
+  S.input = '';
+  if (!String(v || '').trim()) return undefined;
+  return actSend(v);
+}
+
+async function doTest() {
+  doSaveSettings(true);
+  S.testMsg = '正在连…';
   render();
   try {
-    const out = await chat({
-      baseUrl: S.settings.baseUrl,
-      apiKey: S.settings.apiKey,
-      model: S.settings.model,
-      effort: S.settings.effort,
-      messages: P.chapterMessages(S.story, evs, narr, S.style ? E.brief(S.style) : ''),
-      maxTokens: 4000,
-    });
-    const body = String(out || '').trim();
-    if (!body) throw new Error('模型这次没写出来。再点一次。');
-    ch.body = body;
-    ch.status = 'draft';
-    ch.at = Date.now();
-    await save();
-  } catch (err) {
-    S.err = err.message || String(err);
-  } finally {
-    S.busy = false;
+    const r = await testConnection(S.settings);
+    S.testMsg = r;
+  } catch (e) {
+    S.testMsg = (e && e.message) || '连不上';
+  }
+  render();
+}
+
+async function doLoadModels() {
+  doSaveSettings(true);
+  S.testMsg = '正在读取…';
+  render();
+  try {
+    const list = await listModels(S.settings.baseUrl, S.settings.apiKey);
+    S.settings = S_.saveSettings({ models: list, model: pickModel(list, S.settings.baseUrl) });
+    S.testMsg = `读到 ${list.length} 个模型。`;
+  } catch (e) {
+    S.testMsg = (e && e.message) || '读不到';
+  }
+  render();
+}
+
+function doSaveSettings(quiet) {
+  const base = document.getElementById('set-base');
+  const key = document.getElementById('set-key');
+  const eff = document.getElementById('set-effort');
+  const patch = {};
+  if (base) patch.baseUrl = base.value.trim() || S.settings.baseUrl;
+  if (key) patch.apiKey = key.value.trim() || S.settings.apiKey;
+  if (eff) patch.effort = eff.value;
+  S.settings = S_.saveSettings(patch);
+  if (!quiet) {
+    S.testMsg = '存好了。';
     render();
   }
 }
 
-/* ---------------- 生成设定 ---------------- */
-
-function viewSuggest() {
-  const list = S.suggest || [];
-  return `${topbar('AI 提的设定')}
-  <div class="wrap">
-    ${S.busy ? '<div class="dim center pad">正在读你现有的设定…</div>' : ''}
-    ${list.length
-      ? list.map((s, i) => `<div class="panel">
-          <div class="seclabel">${s.kind === 'character' ? '角色' : '设定'}</div>
-          <input class="field" data-sg="${i}" data-k="title" value="${esc(s.title)}">
-          <textarea class="field" rows="4" data-sg="${i}" data-k="text">${esc(s.text)}</textarea>
-          <button class="lnk" data-act="sg-drop" data-i="${i}">不要这条</button>
-        </div>`).join('')
-      : (!S.busy ? '<div class="empty"><div class="big">还没有新设定</div><p>点下面的按钮，让它读一遍现有设定再提。</p></div>' : '')}
-    <div class="row-btns">
-      <button class="btn ghost" data-act="suggest-run" ${S.busy ? 'disabled' : ''}>${list.length ? '再提一批' : '开始提'}</button>
-      ${list.length ? '<button class="btn primary" data-act="sg-take">收进书里</button>' : ''}
-    </div>
-  </div>`;
+function exportTxt() {
+  const ps = C.liveParagraphs(S.story);
+  const txt = S.story.title + '\n\n' + ps.map((p) => p.text).join('\n\n');
+  const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (S.story.title || '小说') + '.txt';
+  a.click();
+  toast('导出好了');
 }
 
-async function runSuggest() {
-  S.busy = true;
+/* ---------------- 文风提取（五步，原样保留） ---------------- */
+
+function startForge() {
+  S.forge = { stage: 'essay', essay: '', read: [], rules: '', passages: [], order: [], note: '', name: '我的文风', busy: false, live: '', progress: '' };
   S.err = '';
+  S.view = 'forge';
   render();
-  try {
-    const out = await chat({
-      baseUrl: S.settings.baseUrl,
-      apiKey: S.settings.apiKey,
-      model: S.settings.model,
-      effort: S.settings.effort,
-      messages: P.suggestMessages(S.story),
-      maxTokens: 1600,
-    });
-    const got = P.parseSuggest(out);
-    if (!got.length) throw new Error('这次没提出可用的设定。再点一次。');
-    S.suggest = got;
-  } catch (err) {
-    S.err = err.message || String(err);
-    toast(err.message || String(err));
-  } finally {
-    S.busy = false;
-    render();
-  }
 }
 
-/* ---------------- 文风（实验法） ---------------- */
-
-function viewStyles() {
-  return `${topbar('文风')}
-  <div class="wrap">
-    <button class="btn primary wide" data-act="forge-start">提取一份新文风</button>
-    ${S.styles.length
-      ? `<div class="list">${S.styles.map((w) => `<div class="row" data-act="style-open" data-id="${w.id}">
-          <div class="t">${esc(w.name)}</div>
-          <div class="s">${esc(String(w.rules || '').split('\n').filter(Boolean).length)} 条规则</div>
-        </div>`).join('')}</div>`
-      : '<div class="empty"><div class="big">还没有文风</div><p>写一小段随笔，它读出你的写法，照着重写四段，你排个序就定下来。</p></div>'}
-  </div>`;
-}
+const val = (id, dflt) => {
+  const el = document.getElementById(id);
+  return el ? el.value : dflt;
+};
 
 function viewForge() {
   const f = S.forge;
-  if (!f) {
-    go('styles');
-    return '';
-  }
-  const STEPS = ['写一段', '看规则', '让它写', '排个序', '存下来'];
-  const idx = { essay: 1, rules: 2, imitate: 3, rank: 4, done: 5 }[f.stage] || 1;
+  if (!f) return viewStyles();
+  const steps = ['写一段', '看规则', '让它写', '排个序', '存下来'];
+  const bar = `<div class="fsteps">${steps.map((s, i) => `<span class="${(f.stage === ['essay', 'rules', 'imitate', 'rank', 'done'][i]) ? 'on' : ''}">${s}</span>`).join('')}</div>`;
   let body = '';
-
   if (f.stage === 'essay') {
     body = `<div class="panel">
       <div class="seclabel">先写一小段</div>
       <div class="dim">不用完整，不用讲究。写你平时会写的那样，三五句就够。</div>
-      <div class="matbox"><span>就写这个</span>${esc(E.ESSAY_MATERIAL)}</div>
-      <textarea class="field" id="essay" rows="8" placeholder="从这一句往下写，写到你自然停下来为止。">${esc(f.essay || '')}</textarea>
+      <div class="matbox"><div class="dim">就写这个</div><div>${esc(F.ESSAY_MATERIAL)}</div></div>
+      <textarea class="field" id="essay" rows="9" placeholder="从这一句往下写，写到你自然停下来为止。">${esc(f.essay || '')}</textarea>
     </div>
-    ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
-    <div class="row-btns">
-      <button class="btn ghost" data-act="forge-skip">跳过去</button>
-      <button class="btn primary" data-act="forge-analyze" ${f.busy ? 'disabled' : ''}>让它看</button>
-    </div>`;
+    <div class="row-btns"><button class="btn ghost" data-act="forge-skip">跳过去</button><button class="btn primary" data-act="forge-analyze" ${f.busy ? 'disabled' : ''}>让它看</button></div>`;
   } else if (f.stage === 'rules') {
-    body = `${f.read && f.read.length ? `<div class="panel readbox"><div class="seclabel">它读到的</div>${f.read.map((r) => `<p>${esc(r)}</p>`).join('')}</div>` : ''}
-    <div class="panel">
-      <div class="seclabel">写作规则${f.round > 1 ? ` · 第 ${f.round} 版` : ''}</div>
+    body = `<div class="panel">
+      <div class="seclabel">它读到的</div>
+      ${(f.read || []).map((x) => `<p class="dim">— ${esc(x)}</p>`).join('')}
+      <div class="seclabel">写作规则</div>
       <div class="dim">这几条可以直接改。以后写小说，叙述就按这几条来。</div>
       <textarea class="field" id="forge-rules" rows="11">${esc(f.rules || '')}</textarea>
     </div>
-    ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
-    <div class="row-btns">
-      <button class="btn ghost" data-act="forge-back-essay">回去重写</button>
-      <button class="btn primary" data-act="forge-imitate" ${f.busy ? 'disabled' : ''}>让它照这个写四段</button>
-    </div>`;
+    <div class="row-btns"><button class="btn ghost" data-act="forge-back-essay">回去重写</button><button class="btn primary" data-act="forge-imitate" ${f.busy ? 'disabled' : ''}>让它照这个写四段</button></div>`;
   } else if (f.stage === 'imitate') {
     body = `<div class="panel">
       <div class="seclabel">它照规则写的四段</div>
       <div class="dim">同一个材料，四种写法。等下你要把它们从最差排到最好。</div>
-      ${f.busy ? `<div class="dim pad">${esc(f.progress || '正在写…')}</div>` : ''}
-      ${f.busy ? `<div class="live" id="live">${esc(f.live || '')}</div>` : ''}
-      ${!f.busy && (f.passages || []).length ? f.passages.map((p, i) => `<div class="passage"><b>${i + 1}</b><p>${esc(p)}</p></div>`).join('') : ''}
+      ${f.busy ? `<div class="dim">${esc(f.progress || '正在写…')}</div><div class="live" id="live">${esc(f.live || '')}</div>` : ''}
+      ${!f.busy && f.passages.length ? f.passages.map((p, i) => `<div class="passage"><b>${i + 1}</b><p>${esc(p)}</p></div>`).join('') : ''}
     </div>
-    ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
-    <div class="row-btns">
-      <button class="btn ghost" data-act="forge-back-rules">规则不对，回去改</button>
-      <button class="btn primary" data-act="forge-to-rank" ${f.busy || (f.passages || []).length < 3 ? 'disabled' : ''}>排一下序</button>
-    </div>`;
+    <div class="row-btns"><button class="btn ghost" data-act="forge-back-rules">规则不对，回去改</button><button class="btn primary" data-act="forge-to-rank" ${f.busy || f.passages.length < 3 ? 'disabled' : ''}>排一下序</button></div>`;
   } else if (f.stage === 'rank') {
+    const sum = f.order.map((i) => i + 1).join(' → ');
     body = `<div class="panel">
       <div class="seclabel">从最差排到最好</div>
       <div class="dim">依次点四段。第一下＝最差，第四下＝最好。点错了再点一下取消。</div>
-      ${(f.passages || []).map((p, i) => {
-        const pos = (f.order || []).indexOf(i);
+      ${f.order.length ? `<div class="ordersum">你排的：${esc(sum)}（${f.order.length}/4）</div>` : ''}
+      ${f.passages.map((p, i) => {
+        const pos = f.order.indexOf(i);
         return `<div class="pickcard ${pos >= 0 ? 'picked' : ''}" data-act="rank-pick" data-id="${i}">
           <b>${i + 1}</b>${pos >= 0 ? `<em>${pos + 1}</em>` : ''}<p>${esc(p)}</p></div>`;
       }).join('')}
-      <div class="ordersum">${(f.order || []).length ? `你排的：${f.order.map((i) => i + 1).join(' → ')}　（${f.order.length}/4）` : '还没开始排。从你觉得最差的那段点起。'}</div>
     </div>
-    <div class="row-btns">
-      <button class="btn ghost" data-act="forge-to-imitate">再写四段</button>
-      <button class="btn primary" data-act="forge-revise" ${f.busy || (f.order || []).length < 4 ? 'disabled' : ''}>按这个改规则</button>
-    </div>`;
+    <div class="row-btns"><button class="btn ghost" data-act="forge-to-imitate">再写四段</button><button class="btn primary" data-act="forge-revise" ${f.busy || f.order.length < 4 ? 'disabled' : ''}>按这个改规则</button></div>`;
   } else {
     body = `<div class="panel">
-      <div class="seclabel">存下来</div>
-      <div class="dim">这份文风以后写小说时用来管叙述那一层。</div>
+      <div class="seclabel">存成一份文风</div>
       <input class="field" id="forge-name" value="${esc(f.name)}">
       <textarea class="field" id="forge-final" rows="12">${esc(f.rules || '')}</textarea>
     </div>
-    <div class="row-btns">
-      <button class="btn ghost" data-act="forge-to-rank">回去再排一次</button>
-      <button class="btn primary" data-act="forge-done">存成一份文风</button>
-    </div>`;
+    <div class="row-btns"><button class="btn ghost" data-act="forge-to-rank">回去再排一次</button><button class="btn primary" data-act="forge-done">存成一份文风</button></div>`;
   }
-
-  return `${topbar('提取我的文风', '', 'back')}
-  <div class="wrap">
-    <div class="fsteps">${STEPS.map((s, i) => `<span class="${i + 1 === idx ? 'on' : ''}">${s}</span>`).join('')}</div>
-    ${body}
-  </div>`;
-}
-
-function startForge() {
-  S.forge = {
-    name: '我的文风',
-    stage: 'essay',
-    essay: '',
-    read: [],
-    rules: '',
-    passages: [],
-    order: [],
-    round: 1,
-    busy: false,
-    live: '',
-    progress: '',
-  };
-  S.err = '';
-  push('forge');
+  return `<div class="wrap"><header class="simple"><button class="icon" data-act="go-shelf">‹</button><h1>提取我的文风</h1></header>${bar}${body}${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}</div>`;
 }
 
 async function forgeAnalyze() {
   const f = S.forge;
   if (!f || f.busy) return;
-  const el = document.getElementById('essay');
-  f.essay = el ? el.value : f.essay;
+  f.essay = val('essay', f.essay);
   if (String(f.essay).trim().length < 30) {
     S.err = '再写几句，至少三十个字。写你平时会写的那样就行，不用完整。';
-    render();
-    return;
+    return render();
   }
-  f.busy = true;
   S.err = '';
+  f.busy = true;
   render();
   try {
-    const got = await chat({
-      baseUrl: S.settings.baseUrl,
-      apiKey: S.settings.apiKey,
-      model: S.settings.model,
-      effort: S.settings.effort,
-      messages: E.analyzeMessages(f.essay),
-      maxTokens: 1400,
-    });
-    const got2 = E.parseAnalyze(got);
-    f.read = got2.read;
-    f.rules = got2.text || E.rulesToText(got2.rules);
-    if (!f.rules) throw new Error('没读出规则，再点一次。');
+    const raw = await chat({ baseUrl: S.settings.baseUrl, apiKey: S.settings.apiKey, model: S.settings.model, messages: F.analyzeMessages(f.essay), json: false, maxTokens: 1200 });
+    const got = F.parseAnalyze(raw);
+    f.read = got.read;
+    f.rules = got.text || F.rulesToText(got.rules);
     f.stage = 'rules';
-  } catch (err) {
-    S.err = err.message || String(err);
-  } finally {
-    f.busy = false;
-    render();
+  } catch (e) {
+    S.err = (e && e.message) || '没读出来';
   }
+  f.busy = false;
+  render();
 }
 
 async function forgeImitate() {
   const f = S.forge;
   if (!f || f.busy) return;
-  const el = document.getElementById('forge-rules');
-  f.rules = el ? el.value : f.rules;
-  if (!String(f.rules).trim()) {
-    S.err = '规则是空的。';
-    render();
-    return;
-  }
+  f.rules = val('forge-rules', f.rules);
   f.busy = true;
   f.passages = [];
-  f.order = [];
-  f.live = '';
-  S.err = '';
+  f.progress = '正在写第 1 / 4 段…';
   f.stage = 'imitate';
   render();
   try {
@@ -810,528 +845,89 @@ async function forgeImitate() {
       f.progress = `正在写第 ${i + 1} / 4 段…`;
       f.live = '';
       render();
-      let got = '';
       try {
-        got = await streamChat({
-          baseUrl: S.settings.baseUrl,
-          apiKey: S.settings.apiKey,
-          model: S.settings.model,
-          effort: S.settings.effort,
-          messages: E.imitateOneMessages(f.rules, E.ESSAY_MATERIAL, i),
-          maxTokens: 1200,
-          temperature: 0.95,
-          onDelta: (d, full) => {
-            f.live = full;
-            const box = document.getElementById('live');
-            if (box) box.textContent = full;
-          },
-        });
-      } catch (e1) {
-        got = '';
+        const p = await chat({ baseUrl: S.settings.baseUrl, apiKey: S.settings.apiKey, model: S.settings.model, messages: F.imitateOneMessages(f.rules, F.ESSAY_MATERIAL, i), json: false, maxTokens: 1200 });
+        const t = String(p || '').trim();
+        if (t) f.passages.push(t);
+      } catch (e) {
+        /* 单段失败不毁全部 */
       }
-      const clean = String(got || '')
-        .replace(/^\s*好的[，,。]?\s*/, '')
-        .replace(/^\s*-{3,}\s*$/gm, '')
-        .trim();
-      if (clean.length >= 10) f.passages.push(clean);
-      f.live = '';
     }
-    if (f.passages.length < 3) throw new Error('有几段没写出来。再点一次，或者把规则改短一点。');
-  } catch (err) {
-    S.err = err.message || String(err);
-    f.stage = 'rules';
-  } finally {
-    f.busy = false;
-    f.progress = '';
-    render();
+    if (f.passages.length < 3) S.err = '有几段没写出来。再点一次，或者把规则改短一点。';
+  } catch (e) {
+    S.err = (e && e.message) || '没写出来';
   }
+  f.busy = false;
+  f.progress = '';
+  render();
 }
 
 async function forgeRevise() {
   const f = S.forge;
-  if (!f || f.busy || (f.order || []).length < 4) return;
+  if (!f || f.busy) return;
   f.busy = true;
-  S.err = '';
   render();
   try {
-    const out = await chat({
-      baseUrl: S.settings.baseUrl,
-      apiKey: S.settings.apiKey,
-      model: S.settings.model,
-      effort: S.settings.effort,
-      messages: E.reviseMessages(f.rules, f.passages, f.order, ''),
-      maxTokens: 1600,
-    });
-    const next = E.cleanRules(out);
-    if (!next) throw new Error('这次没写出新规则，再点一次。');
-    f.rules = next;
-    f.round += 1;
+    const raw = await chat({ baseUrl: S.settings.baseUrl, apiKey: S.settings.apiKey, model: S.settings.model, messages: F.reviseMessages(f.rules, f.passages, f.order, f.note), json: false, maxTokens: 1200 });
+    const next = F.cleanRules(raw);
+    if (next) f.rules = next;
     f.stage = 'done';
-  } catch (err) {
-    S.err = err.message || String(err);
-  } finally {
-    f.busy = false;
-    render();
+  } catch (e) {
+    S.err = (e && e.message) || '没改成';
   }
+  f.busy = false;
+  render();
 }
 
 async function forgeDone() {
   const f = S.forge;
-  if (!f) return;
-  const nameEl = document.getElementById('forge-name');
-  const finalEl = document.getElementById('forge-final');
-  const style = S_.newStyle({
-    name: (nameEl && nameEl.value.trim()) || '我的文风',
-    rules: (finalEl && finalEl.value) || f.rules || '',
-    at: Date.now(),
-  });
-  await S_.putStyle(style);
+  const name = (val('forge-name', f.name) || '我的文风').trim();
+  const text = val('forge-final', f.rules) || '';
+  const st = S_.newStyle({ name, text });
+  st.text = text;
+  await S_.putStyle(st);
   S.styles = await S_.listStyles();
   S.forge = null;
-  toast('存好了');
-  go('styles');
+  S.view = 'styles';
+  render();
 }
 
-/* ---------------- 设置 ---------------- */
+/* ---------------- 起 ---------------- */
 
-function viewSettings() {
-  const st = S.settings;
-  return `${topbar('设置')}
-  <div class="wrap">
-    <div class="panel">
-      <div class="seclabel">皮肤</div>
-      <div class="dim">换一套配色，立刻生效。</div>
-      ${THEMES.map((t) => `<div class="skinrow" data-act="theme" data-id="${t.id}">
-        <i style="background:${t.sw}"></i>
-        <div><b>${t.name}</b><span>${t.desc}</span></div>
-        ${st.theme === t.id ? '<em>✓</em>' : ''}
-      </div>`).join('')}
-    </div>
-    <div class="panel">
-      <div class="seclabel">接口</div>
-      <input class="field" id="set-url" value="${esc(st.baseUrl)}" placeholder="https://api.deepseek.com/v1">
-      <input class="field" id="set-key" type="password" value="${esc(st.apiKey)}" placeholder="密钥">
-      <div class="row-btns">
-        <button class="btn ghost" data-act="test" ${S.testing ? 'disabled' : ''}>测一下</button>
-        <button class="btn ghost" data-act="loadmodels">读取模型</button>
-      </div>
-      ${S.testMsg ? `<div class="dim">${esc(S.testMsg)}</div>` : ''}
-    </div>
-    <div class="panel">
-      <div class="seclabel">可用模型</div>
-      ${(S.models || []).length
-        ? S.models.map((m) => `<label class="chk"><input type="checkbox" data-model="${esc(m)}" ${(st.models || []).includes(m) ? 'checked' : ''}><span>${esc(m)}</span></label>`).join('')
-        : '<div class="dim">先点上面的「读取模型」。</div>'}
-      <div class="seclabel" style="margin-top:14px">默认模型</div>
-      <input class="field" id="set-model" value="${esc(st.model)}" placeholder="deepseek-chat">
-      <div class="seclabel" style="margin-top:14px">推理等级</div>
-      <select class="field" id="set-effort">${EFFORTS.map((e) => `<option value="${e.id}" ${st.effort === e.id ? 'selected' : ''}>${e.name} — ${e.desc}</option>`).join('')}</select>
-      <div class="dim">开得越高，模型想得越久，也越慢越贵。写小说一般不用开。</div>
-    </div>
-    <button class="btn primary wide" data-act="save-settings">保存</button>
-  </div>`;
-}
-
-/* ---------------- 事件 ---------------- */
-
-const val = (id, fallback) => {
-  const el = document.getElementById(id);
-  return el ? el.value : fallback;
-};
-
-// 任何东西都变成一句人话：Error、接口返回的对象、字符串
-function readable(x) {
-  if (x == null) return '';
-  if (typeof x === 'string') return x;
-  if (x instanceof Error) return x.message || '出错了';
-  if (typeof x === 'object') {
-    if (Array.isArray(x.models)) return `连接正常，读到 ${x.models.length} 个模型。`;
-    if (x.message) return String(x.message);
-    if (x.error) return String((x.error && x.error.message) || x.error);
-    try {
-      return JSON.stringify(x);
-    } catch (e) {
-      return '出错了';
-    }
-  }
-  return String(x);
-}
-
-$app.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-act]');
-  if (!el) return;
-  const act = el.dataset.act;
-  const id = el.dataset.id;
+$app.addEventListener('click', (e) => {
   try {
-    switch (act) {
-      case 'back':
-        return back();
-      case 'shelf':
-        S.view = 'shelf';
-        return render();
-      case 'go':
-        return go(el.dataset.to);
-      case 'newbook': {
-        const st = S_.newStory('新的一本');
-        await S_.putStory(st);
-        S.stories = await S_.listStories();
-        await openStory(st.id);
-        return;
-      }
-      case 'openbook':
-        return openStory(id);
-      case 'book-menu':
-        return openBookMenu();
-      case 'addcard': {
-        const k = el.dataset.kind;
-        const def = S_.CARD_KINDS[k];
-        const c = S_.addCard(S.story, k, def.name);
-        await save();
-        S.cardId = c.id;
-        return push('card');
-      }
-      case 'opencard':
-        S.cardId = id;
-        S.err = '';
-        return push('card');
-      case 'card-del': {
-        if (!confirm('删掉这张卡？')) return;
-        S_.removeCard(S.story, S.cardId);
-        await save();
-        return go('book');
-      }
-      case 'startact': {
-        S.err = '';
-        const c = card();
-        const ss = S_.newSession(c.id, c.kind);
-        S.story.sessions.unshift(ss);
-        S.sessionId = ss.id;
-        S.input = '';
-        await save();
-        return push('act');
-      }
-      case 'act-say': {
-        const typed = el.dataset.t;
-        return actSend(typed != null ? typed : val('say', S.input));
-      }
-      case 'collect':
-        return startCollect();
-      case 'collect-ok':
-        return applyCollect();
-      case 'collect-drop': {
-        const patch = (S.story.patches || []).find((p) => p.id === S.patchId);
-        if (patch) S.story.patches = S.story.patches.filter((p) => p.id !== patch.id);
-        await save();
-        S.patchId = '';
-        return go('card');
-      }
-      case 'card-hist':
-        return cardHistory();
-      case 'ev-add': {
-        const c = card();
-        c.events = c.events || [];
-        c.events.push(S_.newEvent('', '', ''));
-        await save();
-        return render();
-      }
-      case 'ev-del': {
-        const c = card();
-        c.events = (c.events || []).filter((x) => x.id !== id);
-        await save();
-        return render();
-      }
-      case 'suggest-open': {
-        S.suggest = null;
-        return push('suggest');
-      }
-      case 'suggest-run':
-        return runSuggest();
-      case 'sg-drop': {
-        S.suggest = (S.suggest || []).filter((x, i) => i !== Number(el.dataset.i));
-        return render();
-      }
-      case 'sg-take': {
-        for (const s of S.suggest || []) {
-          const c = S_.addCard(S.story, s.kind, s.title || '未命名');
-          c.sections[0].text = s.text;
-        }
-        S.suggest = null;
-        await save();
-        toast('收进来了');
-        return go('book');
-      }
-      case 'pick':
-        return render();
-      case 'chapter-from': {
-        const picked = Object.keys(S.picks || {}).filter((k) => S.picks[k]);
-        if (!picked.length) return toast('先勾几个事件');
-        const ch = S_.newChapter();
-        ch.eventIds = picked;
-        S.story.chapters = S.story.chapters || [];
-        S.story.chapters.push(ch);
-        await save();
-        S.chapterId = ch.id;
-        return go('chapter');
-      }
-      case 'open-chapter':
-        S.chapterId = id;
-        return go('chapter');
-      case 'chapter-gen':
-        return genChapter();
-      case 'chapter-export': {
-        const ch = (S.story.chapters || []).find((x) => x.id === S.chapterId);
-        const blob = new Blob([`${ch.title}\n\n${ch.body}`], { type: 'text/plain;charset=utf-8' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `${ch.title || '章节'}.txt`;
-        a.click();
-        return;
-      }
-      case 'style-open': {
-        const w = (S.styles || []).find((x) => x.id === id);
-        if (!w) return;
-        S.forge = { name: w.name, stage: 'done', rules: w.rules, read: [], passages: [], order: [], round: 1, busy: false, live: '' };
-        return push('forge');
-      }
-      case 'forge-start':
-        return startForge();
-      case 'forge-analyze':
-        return forgeAnalyze();
-      case 'forge-skip': {
-        S.forge.stage = 'rules';
-        S.forge.rules = S.forge.rules || '';
-        return render();
-      }
-      case 'forge-back-essay':
-        S.forge.stage = 'essay';
-        return render();
-      case 'forge-imitate':
-        return forgeImitate();
-      case 'forge-back-rules':
-        S.forge.stage = 'rules';
-        return render();
-      case 'forge-to-rank':
-        S.forge.stage = 'rank';
-        return render();
-      case 'forge-to-imitate':
-        S.forge.stage = 'imitate';
-        return render();
-      case 'rank-pick': {
-        const i = Number(id);
-        const o = S.forge.order || (S.forge.order = []);
-        const pos = o.indexOf(i);
-        if (pos >= 0) o.splice(pos, 1);
-        else if (o.length < 4) o.push(i);
-        return render();
-      }
-      case 'forge-revise':
-        return forgeRevise();
-      case 'forge-done':
-        return forgeDone();
-      case 'theme':
-        S.settings = S_.saveSettings({ theme: id });
-        applyTheme(id);
-        return render();
-      case 'loadmodels': {
-        const key = String(val('set-key', '') || '').trim() || S.settings.apiKey;
-        S.settings = S_.saveSettings({ baseUrl: String(val('set-url', '') || S.settings.baseUrl).trim(), apiKey: key });
-        try {
-          const list = await listModels(S.settings.baseUrl, S.settings.apiKey);
-          if (!list.length) {
-            S.testMsg = '连接是通的，但这个地址没报出任何模型。可以直接用，模型名照手填。';
-          } else {
-            S.models = list;
-            S.settings = S_.saveSettings({ models: list, model: pickModel(list, S.settings.baseUrl) });
-            S.testMsg = `读到 ${list.length} 个模型。`;
-          }
-        } catch (err) {
-          S.testMsg = readable(err);
-        }
-        return render();
-      }
-      case 'test': {
-        const key = String(val('set-key', '') || '').trim() || S.settings.apiKey;
-        S.settings = S_.saveSettings({
-          baseUrl: String(val('set-url', '') || S.settings.baseUrl).trim(),
-          apiKey: key,
-          model: String(val('set-model', '') || S.settings.model).trim(),
-        });
-        S.testing = true;
-        render();
-        try {
-          const r = await testConnection(S.settings);
-          S.testMsg = readable(r);
-        } catch (err) {
-          S.testMsg = readable(err);
-        }
-        S.testing = false;
-        return render();
-      }
-      case 'save-settings': {
-        const models = Array.from(document.querySelectorAll('[data-model]'))
-          .filter((x) => x.checked)
-          .map((x) => x.dataset.model);
-        S.settings = S_.saveSettings({
-          baseUrl: val('set-url', S.settings.baseUrl),
-          apiKey: val('set-key', S.settings.apiKey),
-          model: val('set-model', S.settings.model),
-          effort: val('set-effort', S.settings.effort),
-          models,
-        });
-        toast('保存了');
-        return back();
-      }
-      default:
-        return;
-    }
+    const r = handler(e);
+    if (r && r.catch) r.catch((err) => window.__sfError('点击出错', err));
   } catch (err) {
-    window.__sfError(`点击 ${act} 时出错`, err);
-    S.err = err.message || String(err);
-    render();
+    window.__sfError('点击出错', err);
   }
 });
 
 $app.addEventListener('input', (e) => {
-  const t = e.target;
-  if (t.id === 'say') S.input = t.value;
-  const ev = t.closest('[data-ev]');
-  if (ev && S.story) {
-    const c = card();
-    const item = ((c && c.events) || []).find((x) => x.id === ev.dataset.ev);
-    if (item) item[ev.dataset.k] = t.value;
-  }
-  const sg = t.closest('[data-sg]');
-  if (sg && S.suggest) {
-    const i = Number(sg.dataset.sg);
-    if (S.suggest[i]) S.suggest[i][sg.dataset.k] = t.value;
-  }
-});
-
-$app.addEventListener('change', async (e) => {
-  const t = e.target;
-  const pk = t.closest('[data-pick]');
-  if (pk) {
-    S.picks[pk.dataset.pick] = t.checked;
-    return render();
-  }
-  const sec = t.closest('[data-sec]');
-  if (sec) {
-    const c = S_.cardById(S.story, sec.dataset.card);
-    const i = Number(sec.dataset.sec);
-    if (c && c.sections[i]) {
-      c.sections[i].text = t.value;
-      await save();
-    }
-    return;
-  }
-  if (t.id === 'card-title') {
-    const c = card();
-    if (c) {
-      c.title = t.value || c.title;
-      await save();
-    }
-    return;
-  }
-  if (t.id === 'ch-title') {
-    const ch = (S.story.chapters || []).find((x) => x.id === S.chapterId);
-    if (ch) {
-      ch.title = t.value;
-      await save();
-    }
-    return;
-  }
-  if (t.closest('[data-ev]')) {
-    await save();
-  }
+  if (e.target && e.target.id === 'say') S.input = e.target.value;
 });
 
 $app.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey && e.target.id === 'say') {
+  if (e.target && e.target.id === 'say' && e.key === 'Enter') {
     e.preventDefault();
-    actSend(e.target.value);
+    const v = e.target.value;
+    e.target.value = '';
+    S.input = '';
+    actSend(v);
   }
 });
 
-/* ---------------- 小交互 ---------------- */
-
-function openBookMenu() {
-  const st = S.story;
-  S.sheet = `
-  <div class="sheetbody">
-    <div class="seclabel">这本书</div>
-    <input class="field" id="book-title" value="${esc(st.title)}">
-    <div class="seclabel" style="margin-top:14px">用哪份文风</div>
-    <select class="field" id="book-style">
-      <option value="">（不用文风）</option>
-      ${S.styles.map((w) => `<option value="${w.id}" ${w.id === st.styleId ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}
-    </select>
-    <div class="row-btns">
-      <button class="btn ghost" data-act="sheet-close">取消</button>
-      <button class="btn primary" data-act="book-save">保存</button>
-    </div>
-  </div>`;
-  render();
-}
-
-function cardHistory() {
-  const c = card();
-  const list = (S.story.patches || []).filter((p) => p.cardId === c.id && p.applied);
-  S.sheet = `<div class="sheetbody">
-    <div class="seclabel">收束记录</div>
-    ${list.length
-      ? list.map((p) => `<div class="row">
-          <div class="t">${new Date(p.at).toLocaleString('zh-CN')}${p.undone ? '（已撤销）' : ''}</div>
-          <div class="s">${p.changes.map((c2) => esc(c2.label)).join('、') || '无正文改动'}</div>
-          ${p.undone ? '' : `<button class="lnk" data-act="patch-undo" data-id="${p.id}">撤销这次</button>`}
-        </div>`).join('')
-      : '<div class="dim">还没有收束过。</div>'}
-    <button class="btn ghost wide" data-act="sheet-close">关掉</button>
-  </div>`;
-  render();
-}
-
-$app.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-act]');
-  if (!el) return;
-  const act = el.dataset.act;
-  if (act === 'book-save') {
-    S.story.title = val('book-title', S.story.title) || S.story.title;
-    const sel = document.getElementById('book-style');
-    S.story.styleId = sel ? sel.value : '';
-    S.style = S.story.styleId ? (await S_.getStyle(S.story.styleId)) || null : null;
-    await save();
-    S.sheet = '';
-    return render();
-  }
-  if (act === 'sheet-close') {
-    S.sheet = '';
-    return render();
-  }
-  if (act === 'patch-undo') {
-    await undoPatch(el.dataset.id);
-    S.sheet = '';
-    return render();
-  }
+$app.addEventListener('pointerdown', (e) => {
+  const p = e.target.closest('[data-para]');
+  if (!p) return;
+  clearTimeout(longPress._t);
+  longPress._t = setTimeout(() => {
+    S.menu = p.dataset.para;
+    render();
+  }, 520);
 });
+$app.addEventListener('pointerup', () => clearTimeout(longPress._t));
+$app.addEventListener('pointercancel', () => clearTimeout(longPress._t));
+const longPress = { _t: 0 };
 
-// 把 sheet 插进渲染结果
-const _render = render;
-render = function () {
-  _render();
-  if (S.sheet) {
-    const mask = document.createElement('div');
-    mask.className = 'mask';
-    mask.innerHTML = `<div class="sheet">${S.sheet}</div>`;
-    mask.addEventListener('click', (ev) => {
-      if (ev.target === mask) {
-        S.sheet = '';
-        render();
-      }
-    });
-    $app.appendChild(mask);
-  }
-};
-
-/* ---------------- 启动 ---------------- */
-applyTheme(S_.loadSettings().theme);
-boot().catch((err) => window.__sfError('启动失败', err));
+boot().catch((e) => window.__sfError('启动', e));
