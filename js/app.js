@@ -6,7 +6,7 @@ import { AXES, AXIS_BY_ID, probeMessages, parseProbe, estimateLevel, brief, desc
 const $app = document.getElementById('app');
 
 // 自检用的种子文本；正常发布时留空串。
-const DEV_SEED = '我站在冷柜前面站了很久，一直没有打开柜门。店员在后面理货，塑料袋的声音停了一下，又响起来。我数了数口袋里的东西：一个手机，一张不认识的卡，还有半包纸巾。手机没电了，屏幕怎么按都不亮。我把那张卡翻过来，背面用圆珠笔写了一串数字，看不清是几位。最后我什么也没买，从侧门出去了。';
+const DEV_SEED = '';
 
 // 开发自检模式：种子非空即视为开发态，会在左下角显示最近一次动作。
 const DEV = !!DEV_SEED;
@@ -301,6 +301,7 @@ function viewForge() {
       <div class="matbox"><span>就写这个</span>${esc(ESSAY_MATERIAL)}</div>
       <textarea id="essay" rows="8" placeholder="从这一句往下写，写到你自然停下来为止。">${esc(f.essay || '')}</textarea>
     </div>
+    ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
     <div class="row-btns">
       <button class="btn ghost" data-act="forge-skip">跳过去</button>
       <button class="btn ghost" data-act="paste-essay">粘贴</button>
@@ -1740,7 +1741,7 @@ async function pasteInto(id) {
     el.focus();
     toast('贴进来了');
   } catch (e) {
-    toast('浏览器没给剪贴板权限');
+    toast('浏览器没给剪贴板权限。在输入框里长按或用 Ctrl+V 直接粘贴也行。');
   }
 }
 
@@ -1754,9 +1755,11 @@ async function forgeAnalyze() {
   if (!f || f.busy) return;
   f.essay = gv('essay', f.essay);
   if (String(f.essay).trim().length < 30) {
-    toast('再写几句，至少三十个字');
+    S.err = '再写几句，至少三十个字。写你平时会写的那样就行，不用完整。';
+    render();
     return;
   }
+  S.err = '';
   f.busy = true;
   S.err = '';
   render();
