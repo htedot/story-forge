@@ -282,3 +282,88 @@ export function trunkMessages(story, choice, styleBrief = '') {
   });
   return msgs;
 }
+
+/* ---------------- 旧书搬迁 ----------------
+   卡片时代的书：章节正文接进主干，角色卡接进人物，
+   其余卡片文字留成 story.legacy 只读存档（不硬塞进硬约束，免得语义错乱）。 */
+
+export function migrateLegacy(story) {
+  const c = normalizeCorpus(story);
+  const cards = Array.isArray(story.cards) ? story.cards : [];
+  const chapters = Array.isArray(story.chapters) ? story.chapters : [];
+  const hasText = c.paragraphs.some((p) => !p.folded && p.text);
+  let touched = false;
+
+  // 1) 旧章节正文 → 段落
+  if (!hasText) {
+    const bodies = chapters.filter((h) => String(h.body || '').trim()).map((h) => ({ id: h.id, body: String(h.body) }));
+    if (bodies.length) {
+      const sc = curScene(story);
+      bodies.forEach((b) => {
+        let p = c.paragraphs.find((x) => x.legacyChapter === b.id);
+        if (!p) {
+          p = {
+            id: uid('p'),
+            sceneId: sc ? sc.id : '',
+            speaker: 'ai',
+            text: b.body.trim(),
+            status: 'ok',
+            note: '',
+            folded: false,
+            legacyChapter: b.id,
+            at: Date.now(),
+          };
+          c.paragraphs.push(p);
+        } else {
+          p.text = b.body.trim();
+          p.folded = false;
+        }
+      });
+      touched = true;
+    }
+  }
+
+  // 2) 角色卡 → 人物
+  cards
+    .filter((x) => x && (x.kind === 'character' || x.kind === 'role'))
+    .forEach((card) => {
+      const name = String(card.title || '').trim();
+      if (!name || personByName(story, name)) return;
+      const sec = (label) => {
+        const s = (card.sections || []).find((y) => String(y.label || '').includes(label));
+        return s ? String(s.text || '').trim() : '';
+      };
+      const body = (card.sections || []).map((s) => String(s.text || '').trim()).filter(Boolean).join('\n');
+      addPerson(story, {
+        name,
+        want: sec('想要'),
+        secret: sec('不肯'),
+        voice: sec('说话') || sec('怎么开口'),
+        from: 'legacy',
+      });
+      const p = personByName(story, name);
+      if (p) p.note = body;
+      touched = true;
+    });
+
+  // 3) 其余卡片 → 只读存档
+  const keep = cards.filter((x) => x && x.kind !== 'character' && x.kind !== 'role');
+  if (keep.length) {
+    const legacy = keep.map((card) => ({
+      kind: card.kind || '',
+      title: String(card.title || '').trim() || '旧设定',
+      text: (card.sections || [])
+        .map((s) => {
+          const t = String(s.text || '').trim();
+          return t ? (s.label ? s.label + '：' + t : t) : '';
+        })
+        .filter(Boolean)
+        .join('\n'),
+    })).filter((x) => x.text);
+    if (legacy.length && !Array.isArray(story.legacy)) story.legacy = legacy;
+    touched = true;
+  }
+
+  if (touched) story.updatedAt = story.updatedAt || Date.now();
+  return story;
+}
