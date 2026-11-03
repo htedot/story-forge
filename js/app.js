@@ -939,6 +939,24 @@ const val = (id, fallback) => {
   return el ? el.value : fallback;
 };
 
+// 任何东西都变成一句人话：Error、接口返回的对象、字符串
+function readable(x) {
+  if (x == null) return '';
+  if (typeof x === 'string') return x;
+  if (x instanceof Error) return x.message || '出错了';
+  if (typeof x === 'object') {
+    if (Array.isArray(x.models)) return `连接正常，读到 ${x.models.length} 个模型。`;
+    if (x.message) return String(x.message);
+    if (x.error) return String((x.error && x.error.message) || x.error);
+    try {
+      return JSON.stringify(x);
+    } catch (e) {
+      return '出错了';
+    }
+  }
+  return String(x);
+}
+
 $app.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
@@ -1115,25 +1133,36 @@ $app.addEventListener('click', async (e) => {
         applyTheme(id);
         return render();
       case 'loadmodels': {
-        S.settings = S_.saveSettings({ baseUrl: val('set-url', S.settings.baseUrl), apiKey: val('set-key', S.settings.apiKey) });
+        const key = String(val('set-key', '') || '').trim() || S.settings.apiKey;
+        S.settings = S_.saveSettings({ baseUrl: String(val('set-url', '') || S.settings.baseUrl).trim(), apiKey: key });
         try {
           const list = await listModels({ baseUrl: S.settings.baseUrl, apiKey: S.settings.apiKey });
-          S.models = list;
-          S.settings = S_.saveSettings({ models: list, model: pickModel(list, S.settings.baseUrl, S.settings.model) });
-          S.testMsg = `读到 ${list.length} 个模型。`;
+          if (!list.length) {
+            S.testMsg = '连接是通的，但这个地址没报出任何模型。可以直接用，模型名照手填。';
+          } else {
+            S.models = list;
+            S.settings = S_.saveSettings({ models: list, model: pickModel(list, S.settings.baseUrl) });
+            S.testMsg = `读到 ${list.length} 个模型。`;
+          }
         } catch (err) {
-          S.testMsg = err.message || String(err);
+          S.testMsg = readable(err);
         }
         return render();
       }
       case 'test': {
-        S.settings = S_.saveSettings({ baseUrl: val('set-url', S.settings.baseUrl), apiKey: val('set-key', S.settings.apiKey), model: val('set-model', S.settings.model) });
+        const key = String(val('set-key', '') || '').trim() || S.settings.apiKey;
+        S.settings = S_.saveSettings({
+          baseUrl: String(val('set-url', '') || S.settings.baseUrl).trim(),
+          apiKey: key,
+          model: String(val('set-model', '') || S.settings.model).trim(),
+        });
         S.testing = true;
         render();
         try {
-          S.testMsg = await testConnection(S.settings);
+          const r = await testConnection(S.settings);
+          S.testMsg = readable(r);
         } catch (err) {
-          S.testMsg = err.message || String(err);
+          S.testMsg = readable(err);
         }
         S.testing = false;
         return render();
