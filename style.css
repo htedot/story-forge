@@ -966,6 +966,47 @@ select.field { background-image: none; }
 }
 @keyframes up2 { from { opacity: 0; transform: translate(-50%, 8px); } }
 
+/* 出错看得见：不弹窗，但一定显示在页面上 */
+#fatal {
+  display: none;
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  bottom: calc(var(--safe-b) + 8px);
+  z-index: 300;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #2b0f12;
+  border: 1px solid #b3261e;
+  color: #ffd7d5;
+  font-size: 11.5px;
+  line-height: 1.55;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 42vh;
+  overflow: auto;
+}
+#fatal.on {
+  display: block;
+}
+
+/* 开发态：最近一次动作 */
+#devact {
+  position: fixed;
+  left: 8px;
+  top: calc(var(--safe-t) + 6px);
+  z-index: 300;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #9fe870;
+  font-size: 10.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  pointer-events: none;
+  opacity: 0.85;
+}
+
 /* ---------------- 皮肤选择 ---------------- */
 .themes {
   display: flex;
