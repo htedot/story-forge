@@ -280,6 +280,9 @@ export function newStyle(extra) {
 
 const SET_KEY = 'sf_settings_v1';
 const CUR_KEY = 'sf_current_v1';
+// v3 换了键名，老用户的设置还躺在旧键里——读不到就成「密钥丢了」
+const LEGACY_SET_KEY = 'storyforge.settings';
+const LEGACY_CUR_KEY = 'storyforge.current';
 
 const DEFAULT_SETTINGS = {
   baseUrl: 'https://api.deepseek.com/v1',
@@ -292,8 +295,16 @@ const DEFAULT_SETTINGS = {
 
 export function loadSettings() {
   try {
-    const raw = JSON.parse(localStorage.getItem(SET_KEY) || '{}');
-    return Object.assign({}, DEFAULT_SETTINGS, raw);
+    const raw = localStorage.getItem(SET_KEY);
+    if (raw != null) return Object.assign({}, DEFAULT_SETTINGS, JSON.parse(raw) || {});
+    // 新键不存在 → 试着从旧键迁移（只迁一次，写成新键）
+    const old = localStorage.getItem(LEGACY_SET_KEY);
+    if (old != null) {
+      const merged = Object.assign({}, DEFAULT_SETTINGS, JSON.parse(old) || {});
+      localStorage.setItem(SET_KEY, JSON.stringify(merged));
+      return merged;
+    }
+    return Object.assign({}, DEFAULT_SETTINGS);
   } catch (e) {
     return Object.assign({}, DEFAULT_SETTINGS);
   }
@@ -305,5 +316,15 @@ export function saveSettings(patch) {
   return next;
 }
 
-export const loadCurrentId = () => localStorage.getItem(CUR_KEY) || '';
+export function loadCurrentId() {
+  const v = localStorage.getItem(CUR_KEY);
+  if (v != null) return v || '';
+  const old = localStorage.getItem(LEGACY_CUR_KEY);
+  if (old) {
+    localStorage.setItem(CUR_KEY, old);
+    return old;
+  }
+  return '';
+}
+
 export const saveCurrentId = (id) => localStorage.setItem(CUR_KEY, id || '');
