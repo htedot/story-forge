@@ -45,6 +45,7 @@ const S = {
   testMsg: '',
   models: [],
   chapter: '',
+  sceneId: '',
 };
 
 function toast(msg) {
@@ -54,6 +55,15 @@ function toast(msg) {
   el.classList.add('on');
   clearTimeout(toast._t);
   toast._t = setTimeout(() => el.classList.remove('on'), 1800);
+}
+
+/* 发送的那一下，手上能感觉到 */
+function tap() {
+  try {
+    if (navigator.vibrate) navigator.vibrate(8);
+  } catch (e) {
+    /* 不支持就算了 */
+  }
 }
 
 async function boot() {
@@ -148,18 +158,29 @@ function viewShelf() {
 function viewBook() {
   const st = S.story;
   if (!st) return viewShelf();
-  const ps = C.liveParagraphs(st);
+  const all = C.liveParagraphs(st);
+  const ids = sceneIds(st);
+  // 回看旧场：只看那一段的正文，不显示输入框
+  const back = S.sceneId && ids.indexOf(S.sceneId) >= 0 && S.sceneId !== ids[ids.length - 1];
+  const ps = back ? all.filter((p) => p.sceneId === S.sceneId) : all;
   const ob = C.openObligation(st);
-  const need = ob ? ob.text : '';
+  const need = back ? '' : ob ? ob.text : '';
   const body = ps
     .map((p) => {
       const cls = p.speaker === 'me' ? 'me' : p.status === 'violation' ? 'bad' : p.status === 'assumed' ? 'guess' : '';
       return `<p class="${cls}" data-para="${esc(p.id)}">${esc(p.text)}</p>`;
     })
     .join('');
-  const live = S.live ? `<p class="live" id="live">${esc(S.live)}</p>` : '<p class="live" id="live"></p>';
+  const live = back ? '' : S.live ? `<p class="live" id="live">${esc(S.live)}</p>` : '<p class="live" id="live"></p>';
   const menu = S.menu ? drawerMenu(S.menu) : '';
   const drawer = S.drawer ? drawerHTML() : '';
+  const foot = back
+    ? `<div class="sbar"><span>正在看第 ${ids.indexOf(S.sceneId) + 1} 场，共 ${ids.length} 场</span><button class="btn ghost" data-act="scene-latest">回到最新</button></div>`
+    : `<footer class="composer">
+      <input id="say" class="say" placeholder="我这一下……" value="${esc(S.input)}" autocomplete="off">
+      <button class="btn primary saybtn" data-act="say" ${S.busy ? 'disabled' : ''}>${S.busy ? '…' : '写'}</button>
+    </footer>
+    <div class="wc">${C.wordCount(st)} 字</div>`;
   return `<div class="book">
     <header class="bookhead">
       <button class="icon" data-act="back" title="书架">‹</button>
@@ -170,14 +191,38 @@ function viewBook() {
     </header>
     ${need ? `<div class="need">这一场还差：${esc(need)}</div>` : ''}
     <div class="prose" id="prose">${body || '<p class="dim">从这里开始写。</p>'}${live}</div>
-    <footer class="composer">
-      <input id="say" class="say" placeholder="我这一下……" value="${esc(S.input)}" autocomplete="off">
-      <button class="btn primary saybtn" data-act="say" ${S.busy ? 'disabled' : ''}>${S.busy ? '…' : '写'}</button>
-    </footer>
-    <div class="wc">${C.wordCount(st)} 字</div>
+    ${foot}
     ${S.err ? `<div class="err">${esc(S.err)}</div>` : ''}
     ${drawer}${menu}
   </div>`;
+}
+
+/* 场的边界：按段落出现的先后，去重 */
+function sceneIds(story) {
+  const out = [];
+  C.liveParagraphs(story).forEach((p) => {
+    if (p.sceneId && out.indexOf(p.sceneId) < 0) out.push(p.sceneId);
+  });
+  return out;
+}
+
+function stepScene(dir) {
+  if (!S.story) return;
+  const ids = sceneIds(S.story);
+  if (ids.length < 2) {
+    toast('只有一场');
+    return;
+  }
+  const cur = S.sceneId && ids.indexOf(S.sceneId) >= 0 ? ids.indexOf(S.sceneId) : ids.length - 1;
+  const j = Math.min(ids.length - 1, Math.max(0, cur + dir));
+  if (j === cur) {
+    toast(dir < 0 ? '已经是第一场了' : '这就是最后一场');
+    return;
+  }
+  S.sceneId = j === ids.length - 1 ? '' : ids[j];
+  render();
+  const box = document.getElementById('prose');
+  if (box) box.scrollTop = 0;
 }
 
 function drawerMenu(id) {
@@ -408,6 +453,8 @@ async function actSend(text) {
   S.busy = true;
   S.err = '';
   S.live = '';
+  S.sceneId = '';
+  tap();
   C.appendParagraph(S.story, { text: t, speaker: 'me' });
   render();
   try {
@@ -574,6 +621,14 @@ function handler(e) {
     case 'drawer-close':
       S.drawer = '';
       return render();
+    case 'scene-latest':
+      S.sceneId = '';
+      render();
+      {
+        const box = document.getElementById('prose');
+        if (box) box.scrollTop = box.scrollHeight;
+      }
+      return;
     case 'menu':
       S.menu = id || '';
       return render();
@@ -687,6 +742,9 @@ async function openTile(id) {
   S.story = S_.normalizeStory(st);
   S.style = S.styles.find((x) => x.id === S.story.styleId) || null;
   S.view = 'book';
+  S.sceneId = '';
+  S.menu = '';
+  S.drawer = '';
   S_.saveCurrentId(S.story.id);
   render();
 }
@@ -943,5 +1001,63 @@ $app.addEventListener('pointerdown', (e) => {
 $app.addEventListener('pointerup', () => clearTimeout(longPress._t));
 $app.addEventListener('pointercancel', () => clearTimeout(longPress._t));
 const longPress = { _t: 0 };
+
+/* 手势：双指下滑开设定；单指左右滑翻场 */
+const g = { x: 0, y: 0, t: 0, n: 0, used: false };
+$app.addEventListener(
+  'touchstart',
+  (e) => {
+    const t0 = e.touches[0];
+    g.n = e.touches.length;
+    g.used = false;
+    g.t = Date.now();
+    g.x = t0 ? t0.clientX : 0;
+    g.y = t0 ? t0.clientY : 0;
+  },
+  { passive: true }
+);
+$app.addEventListener(
+  'touchend',
+  (e) => {
+    const t0 = e.changedTouches && e.changedTouches[0];
+    if (!t0 || g.used) return;
+    const dx = t0.clientX - g.x;
+    const dy = t0.clientY - g.y;
+    const dt = Date.now() - g.t;
+    if (dt > 700) return;
+    if (g.n >= 2) {
+      if (dy > 60 && S.view === 'book' && !S.drawer) {
+        g.used = true;
+        S.drawer = 'people';
+        render();
+      }
+      return;
+    }
+    if (Math.abs(dx) > 70 && Math.abs(dy) < 56) {
+      g.used = true;
+      stepScene(dx > 0 ? -1 : 1);
+    }
+  },
+  { passive: true }
+);
+
+/* 键盘弹起：正文滚到底，输入框不被挡 */
+$app.addEventListener('focusin', (e) => {
+  if (!e.target || e.target.id !== 'say') return;
+  const box = document.getElementById('prose');
+  if (!box) return;
+  setTimeout(() => {
+    box.scrollTop = box.scrollHeight;
+  }, 280);
+});
+
+if (typeof window !== 'undefined' && window.visualViewport) {
+  const fit = () => {
+    document.documentElement.style.setProperty('--vvh', `${Math.round(window.visualViewport.height)}px`);
+  };
+  window.visualViewport.addEventListener('resize', fit);
+  window.visualViewport.addEventListener('scroll', fit);
+  fit();
+}
 
 boot().catch((e) => window.__sfError('启动', e));
